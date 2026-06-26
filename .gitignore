@@ -20,5 +20,5 @@ venv/
 # User config (local settings)
 .excelbridge_config.json
 
-# Test output files
-test/*_结果_*.xlsx
+# Test data
+test/
