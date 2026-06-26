@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+dist/
+ExcelBridge.exe
+ExcelBridge
+*.spec.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# User config (local settings)
+.excelbridge_config.json
+
+# Test output files
+test/*_结果_*.xlsx
