@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-ExcelBridge — Figma UI3 风格界面
-三栏布局 · 上下分屏预览 · 按钮即时反馈
+ExcelBridge — 可视化 Excel 数据批量匹配迁移工具
+三栏布局 · 上下分屏预览 · 按钮即时反馈 · Win7 兼容
+
+Win7 打包注意事项：
+  1. PyInstaller spec 中需显式指定 console=False
+  2. 中文路径图标：使用 os.path 而非硬编码，避免编码错误
+  3. Win7 需确保 VC++ 2015-2019 Redistributable 已安装（ctk 依赖）
 """
 
-import os, sys, struct, zlib
+import os, sys
 # Win7 DPI — 声明 DPI 感知 + 获取实际缩放比例
 _dpi_scale = 1.0
 if sys.platform=='win32':
@@ -30,67 +36,74 @@ from typing import Optional
 from excel_reader import find_files, read_excel, get_relative_path
 
 
-# ═══ 简约 PNG 图标 ═══
-
-def _create_png(w, h, pixels):
-    def chunk(ct, d):
-        c = ct + d
-        return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xFFFFFFFF)
-    raw = b''
-    for y in range(h):
-        raw += b'\x00'
-        for x in range(w):
-            raw += struct.pack('BBBB', *pixels[y * w + x])
-    ihdr = struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)
-    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
-
-def _solid_png(hex_color, size=20, r=5):
-    R, G, B = int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16)
-    px = []
-    for y in range(size):
-        for x in range(size):
-            inside = True
-            if r > 0:
-                for cx, cy in [(r-1,r-1), (size-r,r-1), (r-1,size-r), (size-r,size-r)]:
-                    if (x-cx)**2 + (y-cy)**2 > r**2:
-                        if (x < r and y < r and cx == r-1): inside = False
-                        if (x >= size-r and y < r and cx == size-r): inside = False
-                        if (x < r and y >= size-r and cx == r-1): inside = False
-                        if (x >= size-r and y >= size-r and cx == size-r): inside = False
-            px.append((R, G, B, 255) if inside else (0, 0, 0, 0))
-    return _create_png(size, size, px)
-
-
-# ═══ 色彩 ═══
+# ═══ Material 3 色彩系统 ═══
+# 命名约定：M3_Token = 色值，旧别名指向 M3 Token
 
 class C:
-    PRIMARY       = '#2563EB'
-    PRIMARY_HOVER = '#1D4ED8'
-    PRIMARY_BG    = '#EFF6FF'
-    COPY_BLUE     = '#3B82F6'
-    MATCH_ORANGE  = '#F59E0B'
-    TARGET_GREEN  = '#10B981'
-    PASTE_PURPLE  = '#8B5CF6'
-    COPY_BG       = '#EFF6FF'
-    MATCH_BG      = '#FFFBEB'
-    TARGET_BG     = '#ECFDF5'
-    PASTE_BG      = '#F5F3FF'
-    TEXT_TITLE    = '#0F172A'
-    TEXT_BODY     = '#334155'
-    TEXT_HELP     = '#64748B'
-    TEXT_MUTED    = '#94A3B8'
-    BG_MAIN       = '#F7F9FC'
-    BG_SIDEBAR_L  = '#F7F9FC'
-    BG_SIDEBAR_R  = '#F8FAFC'
-    BG_CARD       = '#FFFFFF'
-    BG_WHITE      = '#FFFFFF'
-    BORDER        = '#E2E8F0'
-    SUCCESS       = '#10B981'
-    ERROR         = '#EF4444'
-    TBL_HDR_BG    = '#F1F5F9'
-    TBL_HDR_FG    = '#1E293B'
-    TBL_EVEN      = '#FFFFFF'
-    TBL_ODD       = '#FAFAFA'
+    # ── M3 Surface 层级 ──
+    M3_SURFACE                  = '#F8F9FA'   # 应用画布（Level 0）
+    M3_SURFACE_CONTAINER_LOWEST = '#FFFFFF'   # 卡片/面板（Level 1）
+    M3_SURFACE_DIM              = '#D9DADB'   # 表头暗底
+
+    # ── M3 Primary 品牌蓝 ──
+    M3_PRIMARY_DEEP             = '#003FB1'   # 最深蓝（hover/active）
+    M3_PRIMARY_CONTAINER        = '#1A56DB'   # 主按钮背景
+    M3_ON_PRIMARY               = '#FFFFFF'   # 按钮文字
+    M3_ON_PRIMARY_CONTAINER     = '#D4DCFF'   # 浅蓝底文字
+
+    # ── M3 Secondary 辅助紫 ──
+    M3_SECONDARY                = '#8126D1'
+    M3_SECONDARY_CONTAINER      = '#9B47EC'
+    M3_ON_SECONDARY_CONTAINER   = '#FFFBFF'
+
+    # ── M3 Tertiary 松石绿 ──
+    M3_TERTIARY                 = '#00544C'
+    M3_TERTIARY_CONTAINER       = '#006E65'
+    M3_ON_TERTIARY_CONTAINER    = '#84F0E2'
+
+    # ── M3 Error ──
+    M3_ERROR                    = '#BA1A1A'
+    M3_ERROR_CONTAINER          = '#FFDAD6'
+    M3_ON_ERROR_CONTAINER       = '#93000A'
+
+    # ── M3 On-Surface 文字层级 ──
+    M3_ON_SURFACE               = '#191C1D'   # 主文字
+    M3_ON_SURFACE_VARIANT       = '#434654'   # 次要文字
+    M3_ON_SURFACE_MUTED         = '#737686'   # 弱化文字
+
+    # ── M3 Outline ──
+    M3_OUTLINE_VARIANT          = '#C3C5D7'   # 边框线
+
+    # ═══ 功能别名（代码中统一使用） ═══
+    PRIMARY          = M3_PRIMARY_CONTAINER    # #1A56DB 主按钮
+    PRIMARY_HOVER    = M3_PRIMARY_DEEP         # #003FB1 hover
+    PRIMARY_BG       = M3_ON_PRIMARY_CONTAINER # #D4DCFF
+    TEXT_TITLE       = M3_ON_SURFACE           # #191C1D
+    TEXT_BODY        = M3_ON_SURFACE_VARIANT   # #434654
+    TEXT_HELP        = M3_ON_SURFACE_VARIANT
+    TEXT_MUTED       = M3_ON_SURFACE_MUTED    # #737686
+    BG_MAIN          = M3_SURFACE             # #F8F9FA
+    BG_SIDEBAR_L     = M3_SURFACE
+    BG_SIDEBAR_R     = M3_SURFACE
+    BG_CARD          = M3_SURFACE_CONTAINER_LOWEST  # #FFFFFF
+    BG_WHITE         = M3_SURFACE_CONTAINER_LOWEST
+    BORDER           = M3_OUTLINE_VARIANT     # #C3C5D7
+    SUCCESS          = M3_TERTIARY            # #00544C
+    ERROR            = M3_ERROR               # #BA1A1A
+    TBL_HDR_BG       = M3_SURFACE_DIM         # #D9DADB
+    TBL_HDR_FG       = M3_ON_SURFACE
+    TBL_EVEN         = M3_SURFACE_CONTAINER_LOWEST
+    TBL_ODD          = '#F3F4F5'
+
+    # ── 功能色：四色映射 ──
+    COPY_BLUE        = M3_PRIMARY_CONTAINER    # 🔵 复制列 #1A56DB
+    COPY_BG          = M3_ON_PRIMARY_CONTAINER # 🔵 背景 #D4DCFF
+    MATCH_ORANGE     = '#D97706'              # 🟠 匹配键
+    MATCH_BG         = '#FEF3C7'              # 🟠 背景
+    TARGET_GREEN     = M3_TERTIARY            # 🟢 目标匹配键 #00544C
+    TARGET_BG        = '#CCFBF1'              # 🟢 背景
+    PASTE_PURPLE     = M3_SECONDARY           # 🟣 粘贴至 #8126D1
+    PASTE_BG         = '#F3E8FF'              # 🟣 背景
 
 
 # ═══ 主应用 ═══
@@ -98,22 +111,47 @@ class C:
 class ExcelBridgeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("ExcelBridge V1.0 — 数据批量匹配迁移工具")
-        self.geometry("1300x800")
-        self.minsize(1050, 620)
+        # ── 自定义标题栏：隐藏原生边框 ──
+        self._is_windows = sys.platform == 'win32'
+        if self._is_windows:
+            # 设置 AppUserModelID 让任务栏显示应用图标而非 Python 图标
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ZERO0044.ExcelBridge.V1')
+            except Exception:
+                pass
+        self._maximized = False
+        self._normal_geometry = None
+        self._resizing = False
+        self._resize_dir = (False, False, False, False)
+        self._dragging = False
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+        if self._is_windows:
+            self.overrideredirect(True)
+            self._fix_window_styles()
+        self.title("ExcelBridge V1.0 — 数据批量匹配迁移工具")  # 任务栏标识
+        self.geometry("1400x850")
+        self.minsize(1200, 700)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         # 适配 Windows 高 DPI 缩放（Linux 下 _dpi_scale = 1.0）
         if _dpi_scale != 1.0:
             ctk.set_widget_scaling(_dpi_scale)
         self.configure(fg_color=C.BG_MAIN)
+        # 窗口级鼠标事件（拖拽 / 调整大小）
+        self.bind('<Button-1>', self._on_root_button1)
+        self.bind('<B1-Motion>', self._on_root_b1_motion)
+        self.bind('<ButtonRelease-1>', self._on_root_button_release)
+        self.bind('<Motion>', self._on_root_motion)
+        self.bind('<Double-Button-1>', self._on_root_double)
 
         # 图标
         if getattr(sys,'frozen',False):
             base_dir=sys._MEIPASS
         else:
             base_dir=os.path.dirname(os.path.abspath(__file__))
-        # 窗口标题栏图标（Windows用ico，Linux用png）
+        # 窗口图标（Windows用ico + Win32 API 强制任务栏图标）
         try:
             ico=os.path.join(base_dir,'icon.ico')
             if os.path.exists(ico):
@@ -122,6 +160,23 @@ class ExcelBridgeApp(ctk.CTk):
             png=os.path.join(base_dir,'_icons','app_icon.png')
             if os.path.exists(png):
                 self.iconphoto(True, tk.PhotoImage(file=png))
+        # Win32 API 设置任务栏图标（overrideredirect 下 iconbitmap 不生效）
+        if self._is_windows:
+            try:
+                import ctypes
+                ico_path = os.path.join(base_dir, 'icon.ico')
+                if os.path.exists(ico_path):
+                    hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                    # 大图标 (32x32) — 任务栏 / Alt+Tab
+                    hIconBig = ctypes.windll.user32.LoadImageW(0, ico_path, 1, 32, 32, 0x00000010)
+                    if hIconBig:
+                        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hIconBig)  # ICON_BIG
+                    # 小图标 (16x16) — 窗口左上角 / 任务栏小视图
+                    hIconSmall = ctypes.windll.user32.LoadImageW(0, ico_path, 1, 16, 16, 0x00000010)
+                    if hIconSmall:
+                        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hIconSmall)  # ICON_SMALL
+            except Exception:
+                pass
         self._icons_dir=os.path.join(base_dir,'_icons')
         os.makedirs(self._icons_dir, exist_ok=True)
         self._icons = {}
@@ -142,15 +197,344 @@ class ExcelBridgeApp(ctk.CTk):
         saved_cfg = self._load_config()
         self._saved_font_size = saved_cfg.get('font_size', '12')
         self._saved_skip_hidden = saved_cfg.get('skip_hidden', False)
+        self.configure(fg_color=C.BG_MAIN)  # 确保 root 背景与主题一致
 
         ExcelBridgeApp._setup_styles()  # 全局样式（只执行一次）
         self._build()
         self._sync_ui()
 
+    # ═══ 窗口管理（自定义标题栏） ═══
+
+    def _fix_window_styles(self):
+        """为 overrideredirect 窗口添加最小化/最大化/任务栏支持"""
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            # GWL_STYLE = -16: 添加最小化/最大化/系统菜单
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
+            style |= 0x00020000  # WS_MINIMIZEBOX
+            style |= 0x00010000  # WS_MAXIMIZEBOX
+            style |= 0x00080000  # WS_SYSMENU
+            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+            # GWL_EXSTYLE = -20: 确保任务栏图标
+            ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+            ex_style |= 0x00040000  # WS_EX_APPWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex_style)
+            # 刷新窗口框架
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                               0x0002 | 0x0004 | 0x0020)  # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
+        except Exception:
+            pass
+
+    def _get_work_area(self):
+        """获取屏幕工作区域（排除任务栏）"""
+        import ctypes
+        from ctypes import wintypes
+        rect = wintypes.RECT()
+        # SPI_GETWORKAREA = 0x0030
+        ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+    # ── 标题栏按钮 ──
+
+    def _titlebar_minimize(self):
+        """最小化窗口（Win32 API，兼容 overrideredirect）"""
+        if self._is_windows:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            # SW_MINIMIZE = 6
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
+        else:
+            self.iconify()
+
+    def _titlebar_maximize_restore(self):
+        if not self._is_windows:
+            return
+        if self._maximized:
+            if self._normal_geometry:
+                self.geometry(self._normal_geometry)
+            self._maximized = False
+            self._max_btn.configure(image=self._max_norm_icon)
+        else:
+            self._normal_geometry = self.winfo_geometry()
+            left, top, w, h = self._get_work_area()
+            self.geometry('{:d}x{:d}+{:d}+{:d}'.format(w, h, left, top))
+            self._maximized = True
+            self._max_btn.configure(image=self._res_norm_icon)
+
+    def _titlebar_close(self):
+        self.destroy()
+
+    # ── 拖拽 ──
+
+    def _start_drag(self, event):
+        self._dragging = True
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+
+    def _do_drag(self, event):
+        if self._maximized:
+            # 从最大化状态拖拽：先还原再拖拽
+            self._titlebar_maximize_restore()
+            return
+        dx = event.x_root - self._drag_start_x
+        dy = event.y_root - self._drag_start_y
+        new_x = self.winfo_x() + dx
+        new_y = self.winfo_y() + dy
+        self.geometry('+{:d}+{:d}'.format(new_x, new_y))
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+
+    # ── 边缘调整大小 ──
+
+    def _on_root_motion(self, event):
+        """检测鼠标是否在窗口边缘，改变光标样式"""
+        if self._maximized or self._resizing:
+            return
+        x = event.x_root - self.winfo_rootx()
+        y = event.y_root - self.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        grip = 4
+
+        is_left = x <= grip
+        is_right = x >= w - grip
+        is_top = y <= grip
+        is_bottom = y >= h - grip
+
+        if (is_top and is_left) or (is_bottom and is_right):
+            self.configure(cursor='size_nw_se')
+        elif (is_top and is_right) or (is_bottom and is_left):
+            self.configure(cursor='size_ne_sw')
+        elif is_top or is_bottom:
+            self.configure(cursor='sb_v_double_arrow')
+        elif is_left or is_right:
+            self.configure(cursor='sb_h_double_arrow')
+        else:
+            self.configure(cursor='arrow')
+
+    def _on_root_button1(self, event):
+        """左键按下：判断是否在边缘（resize）或标题栏区域（drag）"""
+        if self._maximized:
+            return
+        # 使用 root-relative 坐标
+        x = event.x_root - self.winfo_rootx()
+        y = event.y_root - self.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        grip = 4
+
+        is_left = x <= grip
+        is_right = x >= w - grip
+        is_top = y <= grip
+        is_bottom = y >= h - grip
+
+        if is_left or is_right or is_top or is_bottom:
+            self._resizing = True
+            self._resize_dir = (is_left, is_right, is_top, is_bottom)
+            self._drag_start_x = event.x_root
+            self._drag_start_y = event.y_root
+            return
+
+        # 标题栏拖拽：检查点击目标不是按钮
+        if self._is_windows:
+            title_h = self._titlebar_h if hasattr(self, '_titlebar_h') else self._fs(36)
+            if y <= title_h and not self._is_button_ancestor(event.widget):
+                self._start_drag(event)
+
+    def _is_button_ancestor(self, widget):
+        """检查 widget 或其父级是否为 CTkButton"""
+        w = widget
+        while w is not None:
+            try:
+                if 'ctkbutton' in type(w).__name__.lower():
+                    return True
+                w = w.master
+            except Exception:
+                break
+        return False
+
+    def _on_root_b1_motion(self, event):
+        """拖拽移动或调整大小"""
+        if self._resizing:
+            self._do_resize(event)
+        elif self._dragging and not self._maximized:
+            self._do_drag(event)
+
+    def _do_resize(self, event):
+        """执行窗口大小调整（含最小尺寸约束）"""
+        dx = event.x_root - self._drag_start_x
+        dy = event.y_root - self._drag_start_y
+        is_left, is_right, is_top, is_bottom = self._resize_dir
+
+        new_x = self.winfo_x()
+        new_y = self.winfo_y()
+        new_w = self.winfo_width()
+        new_h = self.winfo_height()
+        min_w, min_h = 1200, 700
+
+        if is_left:
+            new_w = max(min_w, new_w - dx)
+            if new_w > min_w:
+                new_x = self.winfo_x() + dx
+        if is_right:
+            new_w = max(min_w, new_w + dx)
+        if is_top:
+            new_h = max(min_h, new_h - dy)
+            if new_h > min_h:
+                new_y = self.winfo_y() + dy
+        if is_bottom:
+            new_h = max(min_h, new_h + dy)
+
+        self.geometry('{:d}x{:d}+{:d}+{:d}'.format(new_w, new_h, new_x, new_y))
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+
+    def _on_root_double(self, event):
+        """双击标题栏 → 最大化/还原"""
+        if not self._is_windows:
+            return
+        y = event.y_root - self.winfo_rooty()
+        title_h = self._titlebar_h if hasattr(self, '_titlebar_h') else self._fs(36)
+        if y <= title_h and not self._is_button_ancestor(event.widget):
+            self._titlebar_maximize_restore()
+
+    def _on_root_button_release(self, event):
+        """释放鼠标：退出 resize / drag 模式"""
+        self._resizing = False
+        self._resize_dir = (False, False, False, False)
+        self._dragging = False
+
+    # ═══ 标题栏图标绘制 ═══
+
+    def _draw_title_icon(self, icon_type, color_hex, size=14):
+        """用 PIL 绘制标题栏按钮图标（矢量风格，Win7 兼容）"""
+        from PIL import Image, ImageDraw
+        img = Image.new('RGBA', (size, size), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(img)
+        R, G, B = int(color_hex[1:3], 16), int(color_hex[3:5], 16), int(color_hex[5:7], 16)
+        sw = max(1, size // 7)  # 线宽自适应
+        m = sw  # 边距
+
+        if icon_type == 'minimize':
+            y = size - 3 - sw
+            draw.rectangle([m + 1, y, size - m - 1, y + sw], fill=(R, G, B, 255))
+
+        elif icon_type == 'maximize':
+            draw.rectangle([m + 1, m + 1, size - m - 1, size - m - 1],
+                           outline=(R, G, B, 255), width=sw)
+
+        elif icon_type == 'restore':
+            # 两个层叠窗口图标：后窗口右下，前窗口左上（白底遮盖重叠线）
+            off = size // 5
+            # 后窗口
+            draw.rectangle([m + 1 + off, m + 1, size - m - 1, size - m - 1 - off],
+                           outline=(R, G, B, 255), width=sw)
+            # 前窗口 — 白色填充以遮盖后窗口轮廓
+            draw.rectangle([m + 1, m + 1 + off, size - m - 1 - off, size - m - 1],
+                           fill=(255, 255, 255, 255), outline=(R, G, B, 255), width=sw)
+
+        elif icon_type == 'close':
+            dm = m + 1  # 稍大内缩让 X 不贴边
+            draw.line([dm, dm, size - dm, size - dm], fill=(R, G, B, 255), width=sw)
+            draw.line([size - dm, dm, dm, size - dm], fill=(R, G, B, 255), width=sw)
+
+        return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+
+    # ═══ 自定义标题栏构建 ═══
+
+    def _build_title_bar(self):
+        """构建自定义标题栏（仅 Windows）"""
+        h = self._fs(36)
+        self._titlebar_h = h
+
+        bar = ctk.CTkFrame(self, fg_color=C.BG_WHITE, height=h, corner_radius=0)
+        bar.grid(row=0, column=0, columnspan=3, sticky='ew')
+        bar.grid_propagate(False)
+        # 底部分隔线
+        ctk.CTkFrame(bar, fg_color=C.BORDER, height=1).place(relx=0, rely=1, relwidth=1, anchor='sw')
+
+        # ── 左侧：图标 + 标题 ──
+        left = ctk.CTkFrame(bar, fg_color='transparent')
+        left.pack(side='left', padx=(12, 0))
+        # 应用图标 (18x18)
+        icon = self._icn('app_icon')
+        if icon:
+            il = ctk.CTkLabel(left, image=icon, text='')
+            il.pack(side='left', padx=(0, 8))
+        else:
+            # fallback：蓝色小方块
+            dot = ctk.CTkFrame(left, fg_color=C.PRIMARY, width=18, height=18, corner_radius=4)
+            dot.pack(side='left', padx=(0, 8))
+        ctk.CTkLabel(left, text='ExcelBridge',
+                     font=('Inter', self._fs(11), 'bold'),
+                     text_color=C.TEXT_TITLE).pack(side='left')
+        ctk.CTkLabel(left, text=' 数据批量匹配迁移工具',
+                     font=('Inter', self._fs(9)),
+                     text_color=C.TEXT_MUTED).pack(side='left')
+
+        # ── 右侧：窗口控制按钮 ──
+        right = ctk.CTkFrame(bar, fg_color='transparent')
+        right.pack(side='right', padx=(0, 2))
+
+        btn_w = self._fs(36)
+        btn_h = h - 6
+        icon_sz = 14
+        # 按钮圆角
+        cr = 6
+
+        # 图标颜色
+        norm_fg = C.TEXT_MUTED   # #94A3B8
+        hover_fg = C.TEXT_BODY   # #334155
+        close_hover_fg = C.ERROR # #EF4444
+        hover_bg = '#E5E7EB'
+        close_hover_bg = '#FEE2E2'
+
+        # ── 最小化 ──
+        min_norm = self._draw_title_icon('minimize', norm_fg, icon_sz)
+        min_hover = self._draw_title_icon('minimize', hover_fg, icon_sz)
+        min_btn = ctk.CTkButton(right, text='', image=min_norm, width=btn_w, height=btn_h,
+                                fg_color='transparent', hover_color=hover_bg, corner_radius=cr)
+        min_btn.pack(side='left', padx=0)
+        min_btn.configure(command=self._titlebar_minimize)
+        min_btn.bind('<Enter>', lambda e, b=min_btn, i=min_hover: b.configure(image=i))
+        min_btn.bind('<Leave>', lambda e, b=min_btn, i=min_norm: b.configure(image=i))
+
+        # ── 最大化 / 还原 ──
+        max_norm = self._draw_title_icon('maximize', norm_fg, icon_sz)
+        max_hover = self._draw_title_icon('maximize', hover_fg, icon_sz)
+        res_norm = self._draw_title_icon('restore', norm_fg, icon_sz)
+        res_hover = self._draw_title_icon('restore', hover_fg, icon_sz)
+        self._max_btn = ctk.CTkButton(right, text='', image=max_norm, width=btn_w, height=btn_h,
+                                      fg_color='transparent', hover_color=hover_bg, corner_radius=cr)
+        self._max_btn.pack(side='left', padx=0)
+        self._max_btn.configure(command=self._titlebar_maximize_restore)
+        self._max_btn.bind('<Enter>',
+            lambda e, b=self._max_btn, mn=max_hover, mr=res_hover:
+                b.configure(image=mr if self._maximized else mn))
+        self._max_btn.bind('<Leave>',
+            lambda e, b=self._max_btn, mn=max_norm, mr=res_norm:
+                b.configure(image=mr if self._maximized else mn))
+        # 保存图标引用以便 _titlebar_maximize_restore 切换
+        self._max_norm_icon = max_norm
+        self._max_hover_icon = max_hover
+        self._res_norm_icon = res_norm
+        self._res_hover_icon = res_hover
+
+        # ── 关闭 ──
+        cls_norm = self._draw_title_icon('close', norm_fg, icon_sz)
+        cls_hover = self._draw_title_icon('close', close_hover_fg, icon_sz)
+        close_btn = ctk.CTkButton(right, text='', image=cls_norm, width=btn_w, height=btn_h,
+                                  fg_color='transparent', hover_color=close_hover_bg, corner_radius=cr)
+        close_btn.pack(side='left', padx=0)
+        close_btn.configure(command=self._titlebar_close)
+        close_btn.bind('<Enter>', lambda e, b=close_btn, i=cls_hover: b.configure(image=i))
+        close_btn.bind('<Leave>', lambda e, b=close_btn, i=cls_norm: b.configure(image=i))
+
     # ── 图标 ──
 
     def _gen_icons(self):
-        names=['folder','target','scan','save','import','sheet','search','rocket','log','guide','rules','clear','file','info','dot_blue','dot_orange','dot_green','dot_purple']
+        names=['app_icon','folder','target','scan','save','import','sheet','search','rocket','log','guide','rules','clear','file','info','dot_blue','dot_orange','dot_green','dot_purple']
         for n in names:
             p=os.path.join(self._icons_dir,f'{n}.png')
             if os.path.exists(p):
@@ -169,16 +553,21 @@ class ExcelBridgeApp(ctk.CTk):
         saved_skip = self._skip_hidden.get() if hasattr(self, '_skip_hidden') else self._saved_skip_hidden
         for w in self.winfo_children():
             w.destroy()
-        self.grid_columnconfigure(0, minsize=250)
+        # 标题栏行 (row 0，仅 Windows) + 内容行 (row 1)
+        if self._is_windows:
+            self.grid_rowconfigure(0, minsize=self._fs(36))
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, minsize=280)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(2, minsize=270)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(2, minsize=320)
 
         # 立即创建 _font_var，确保 _build_*() 中 _fs() 读到正确字号
         self._font_var = ctk.StringVar(value=saved_val)
         self._saved_skip_hidden = saved_skip  # 同步保存值
 
-        ExcelBridgeApp._setup_styles(self._fs(9))
+        ExcelBridgeApp._setup_styles(self._fs(11))
+        if self._is_windows:
+            self._build_title_bar()
         self._build_left()
         self._build_center()
         self._build_right()
@@ -244,56 +633,56 @@ class ExcelBridgeApp(ctk.CTk):
 
     def _build_left(self):
         L = ctk.CTkFrame(self, fg_color=C.BG_SIDEBAR_L, corner_radius=0)
-        L.grid(row=0, column=0, sticky='nswe')
+        L.grid(row=1, column=0, sticky='nswe')
         ctk.CTkFrame(L, fg_color=C.BORDER, width=1).place(relx=1, rely=0, relheight=1, anchor='ne')
         L.grid_rowconfigure(2, weight=1)
         L.grid_columnconfigure(0, weight=1)
 
         top = self._cf(L)
-        top.grid(row=0, column=0, sticky='ew', padx=10, pady=(12, 4))
+        top.grid(row=0, column=0, sticky='ew', padx=16, pady=(16, 8))
 
         # 源文件夹（紧凑单行）
-        self._ilbl(top, "源文件夹", "folder", font=('sans-serif', self._fs(10), 'bold'),
+        self._ilbl(top, "源文件夹", "folder", font=('Inter', self._fs(10), 'bold'),
                    text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w')
-        self._src_entry = ctk.CTkEntry(top, height=28, placeholder_text="选择文件夹...",
+        self._src_entry = ctk.CTkEntry(top, height=28, placeholder_text="请选择源文件夹...",
                                         fg_color=C.BG_WHITE, border_color=C.BORDER,
-                                        corner_radius=6, text_color=C.TEXT_BODY,
-                                        font=('sans-serif', self._fs(10)))
+                                        corner_radius=8, text_color=C.TEXT_BODY,
+                                        font=('Inter', self._fs(10)))
         self._src_entry.grid(row=1, column=0, sticky='ew', pady=(2, 2), columnspan=2)
         r1 = self._cf(top)
         r1.grid(row=2, column=0, sticky='ew')
         self._btn(r1, "浏览...", 56, 24, C.PRIMARY_BG, C.PRIMARY, 'DBEAFE',
                   lambda: self._browse_folder(), icon='folder').grid(row=0, column=0, padx=(0, 4))
-        self._btn(r1, "扫描", 56, 24, 'transparent', C.TEXT_HELP, 'E5E7EB',
-                  lambda: self._act("重新扫描"), icon='scan').grid(row=0, column=1)
+        self._btn(r1, "扫描目录", 56, 24, 'transparent', C.TEXT_HELP, 'E5E7EB',
+                  lambda: self._act("扫描目录"), icon='scan').grid(row=0, column=1)
 
         # 目标模板
-        self._ilbl(top, "目标模板", "target", font=('sans-serif', self._fs(10), 'bold'),
+        self._ilbl(top, "目标模板", "target", font=('Inter', self._fs(10), 'bold'),
                    text_color=C.TEXT_TITLE).grid(row=3, column=0, sticky='w', pady=(10, 0))
-        self._tgt_entry = ctk.CTkEntry(top, height=28, placeholder_text="选择模板...",
+        self._tgt_entry = ctk.CTkEntry(top, height=28, placeholder_text="请选择目标模板文件...",
                                         fg_color=C.BG_WHITE, border_color=C.BORDER,
-                                        corner_radius=6, text_color=C.TEXT_BODY,
-                                        font=('sans-serif', self._fs(10)))
+                                        corner_radius=8, text_color=C.TEXT_BODY,
+                                        font=('Inter', self._fs(10)))
         self._tgt_entry.grid(row=4, column=0, sticky='ew', pady=(2, 2), columnspan=2)
         r2 = self._cf(top)
         r2.grid(row=5, column=0, sticky='ew')
         self._btn(r2, "浏览...", 56, 24, C.PRIMARY_BG, C.PRIMARY, 'DBEAFE',
                   lambda: self._browse_target(), icon='folder').grid(row=0, column=0, padx=(0, 4))
-        self._btn(r2, "加载", 56, 24, 'transparent', C.TEXT_HELP, 'E5E7EB',
+        self._btn(r2, "加载模板", 56, 24, 'transparent', C.TEXT_HELP, 'E5E7EB',
                   lambda: self._act("加载目标模板"), icon='target').grid(row=0, column=1)
 
         # 文件列表标题行（标题 + 复选框）
         hdr_frame = ctk.CTkFrame(L, fg_color='transparent')
-        hdr_frame.grid(row=1, column=0, sticky='ew', padx=12, pady=(12, 4))
+        hdr_frame.grid(row=1, column=0, sticky='ew', padx=16, pady=(16, 4))
         hdr_frame.grid_columnconfigure(0, weight=1)
         self._ilbl(hdr_frame, "源文件列表（点击加载）", "file",
-                   font=('sans-serif', self._fs(10), 'bold'),
+                   font=('Inter', self._fs(10), 'bold'),
                    text_color=C.TEXT_BODY).pack(side='left')
         self._skip_hidden = ctk.BooleanVar(value=self._saved_skip_hidden)
         ctk.CTkCheckBox(hdr_frame, text="跳过隐藏", variable=self._skip_hidden,
                         checkbox_width=14, checkbox_height=14,
                         border_width=1, corner_radius=3,
-                        font=('sans-serif', self._fs(9)),
+                        font=('Inter', self._fs(9)),
                         text_color=C.TEXT_HELP,
                         fg_color=C.PRIMARY, hover_color=C.PRIMARY_BG,
                         command=lambda: self._on_toggle_skip_hidden()).pack(side='right')
@@ -301,14 +690,15 @@ class ExcelBridgeApp(ctk.CTk):
         # 文件列表（动态扫描）
         self._file_frame = ctk.CTkScrollableFrame(
             L, fg_color=C.BG_WHITE, corner_radius=8,
+            border_width=1, border_color=C.BORDER,
             scrollbar_button_color=C.BORDER,
             scrollbar_button_hover_color=C.TEXT_MUTED)
-        self._file_frame.grid(row=2, column=0, sticky='nswe', padx=10, pady=(8, 6))
+        self._file_frame.grid(row=2, column=0, sticky='nswe', padx=16, pady=(8, 8))
         self._file_buttons = {}  # path -> CTkButton
 
         # 底部按钮
         bb = self._cf(L)
-        bb.grid(row=3, column=0, sticky='ew', padx=10, pady=(0, 12))
+        bb.grid(row=3, column=0, sticky='ew', padx=16, pady=(0, 12))
         bb.grid_columnconfigure(0, weight=1)
         self._btn(bb, "保存规则", None, 28, 'transparent', C.TEXT_HELP, 'E5E7EB',
                   lambda: self._act("保存规则"), icon='save').grid(row=0, column=0, sticky='ew', pady=(0, 3))
@@ -343,7 +733,7 @@ class ExcelBridgeApp(ctk.CTk):
 
         if not files:
             ctk.CTkLabel(self._file_frame, text="未找到 xlsx/xls 文件",
-                         font=('sans-serif', self._fs(10)),
+                         font=('Inter', self._fs(10)),
                          text_color=C.TEXT_MUTED).pack(pady=12)
             return
 
@@ -352,8 +742,8 @@ class ExcelBridgeApp(ctk.CTk):
             btn = ctk.CTkButton(
                 self._file_frame, text=f"{rel}", height=28, anchor='w',
                 fg_color='transparent', text_color=C.TEXT_BODY,
-                hover_color='#DBEAFE', corner_radius=6,
-                font=('sans-serif', self._fs(10)),
+                hover_color='#DBEAFE', corner_radius=8,
+                font=('Inter', self._fs(10)),
                 command=lambda p=fpath: self._on_file_select(p))
             btn.pack(fill='x', pady=1)
             self._file_buttons[fpath] = btn
@@ -389,6 +779,11 @@ class ExcelBridgeApp(ctk.CTk):
                 tag = 'even.X' if i % 2 == 0 else 'odd.X'
                 self._src_tree.insert('', 'end', iid=str(i), text=str(i+1),
                                       values=vals, tags=(tag,))
+            if hasattr(self, '_src_empty_label') and self._src_empty_label is not None:
+                try:
+                    self._src_empty_label.place_forget()
+                except Exception:
+                    pass
             if hasattr(self, '_src_info_label') and self._src_info_label is not None:
                 try:
                     self._src_info_label.configure(text=f"共 {ncols} 列 · {len(rows)} 行")
@@ -424,6 +819,11 @@ class ExcelBridgeApp(ctk.CTk):
                     tag = 'even.X' if i % 2 == 0 else 'odd.X'
                     self._tgt_tree.insert('', 'end', iid=str(i), text=str(i+1),
                                           values=vals, tags=(tag,))
+                if hasattr(self, '_tgt_empty_label') and self._tgt_empty_label is not None:
+                    try:
+                        self._tgt_empty_label.place_forget()
+                    except Exception:
+                        pass
                 if hasattr(self, '_tgt_info_label') and self._tgt_info_label is not None:
                     self._tgt_info_label.configure(text=f"共 {len(rows[0]) if rows else 0} 列 · {len(rows)} 行")
                 self._act(f"选择目标模板: {path}")
@@ -434,7 +834,7 @@ class ExcelBridgeApp(ctk.CTk):
 
     def _build_center(self):
         C_ = ctk.CTkFrame(self, fg_color=C.BG_WHITE, corner_radius=0)
-        C_.grid(row=0, column=1, sticky='nswe')
+        C_.grid(row=1, column=1, sticky='nswe')
         C_.grid_rowconfigure(1, weight=50)  # 源文件预览
         C_.grid_rowconfigure(2, weight=50)  # 目标模板预览（等高）
         C_.grid_columnconfigure(0, weight=1)
@@ -442,34 +842,34 @@ class ExcelBridgeApp(ctk.CTk):
         # 步骤条
         self._step_widgets = []
         sb = self._cf(C_)
-        sb.grid(row=0, column=0, sticky='ew', padx=20, pady=(14, 6))
+        sb.grid(row=0, column=0, sticky='ew', padx=24, pady=(16, 8))
 
         # 字体选择器
         ff = ctk.CTkFrame(sb, fg_color='transparent')
         ff.grid(row=0, column=8, sticky='e', padx=(20, 0))
-        ctk.CTkLabel(ff, text="字体:", font=('sans-serif', self._fs(10)), text_color=C.TEXT_HELP).pack(side='left', padx=(0, 4))
+        ctk.CTkLabel(ff, text="字体:", font=('Inter', self._fs(10)), text_color=C.TEXT_HELP).pack(side='left', padx=(0, 4))
         # _font_var 已在 _build() 中创建，确保值正确
         if not hasattr(self, '_font_var'):
             self._font_var = ctk.StringVar(value=self._saved_font_size)
         ctk.CTkComboBox(ff, width=55, height=24, variable=self._font_var,
-                        values=["10","11","12","14","16","18"], font=('sans-serif', self._fs(10)),
+                        values=["10","11","12","14","16","18"], font=('Inter', self._fs(10)),
                         fg_color=C.BG_WHITE, border_color=C.BORDER,
                         button_color=C.PRIMARY, state='readonly',
                         command=self._on_font_change).pack(side='left')
 
-        steps = ["① 选源文件", "② 标记字段", "③ 匹配目标", "④ 执行写入"]
+        steps = ["① 选择文件", "② 标记字段", "③ 匹配目标", "④ 执行写入"]
         for i, label in enumerate(steps):
             f = self._cf(sb)
             f.grid(row=0, column=i, padx=(0, 12 if i < 3 else 0))
-            dot = ctk.CTkFrame(f, fg_color=C.BORDER, width=24, height=24, corner_radius=12)
-            dot.grid(row=0, column=0, padx=(0, 6))
+            dot = ctk.CTkFrame(f, fg_color=C.BORDER, width=32, height=32, corner_radius=16)
+            dot.grid(row=0, column=0, padx=(0, 8))
             dot.grid_propagate(False)
-            dl = ctk.CTkLabel(dot, text=str(i+1), font=('sans-serif', self._fs(10), 'bold'), text_color='white')
+            dl = ctk.CTkLabel(dot, text=str(i+1), font=('Inter', self._fs(10), 'bold'), text_color='white')
             dl.place(relx=0.5, rely=0.5, anchor='center')
-            tl = ctk.CTkLabel(f, text=label, font=('sans-serif', self._fs(10)), text_color=C.TEXT_HELP)
+            tl = ctk.CTkLabel(f, text=label, font=('Inter', self._fs(10)), text_color=C.TEXT_HELP)
             tl.grid(row=0, column=1)
             if i < 3:
-                ctk.CTkFrame(f, fg_color=C.BORDER, width=24, height=2).grid(row=0, column=2, padx=(6, 0))
+                ctk.CTkFrame(f, fg_color=C.BORDER, width=28, height=2).grid(row=0, column=2, padx=(8, 0), pady=15)
             self._step_widgets.append((f, dot, dl, tl))
 
         # ── 上下分屏：源文件(上) + 目标模板(下) ──
@@ -484,8 +884,9 @@ class ExcelBridgeApp(ctk.CTk):
 
     def _build_preview_card(self, parent, row, title, color1, bg1, color2, bg2):
         """构建单个预览卡片（源或目标）"""
-        card = ctk.CTkFrame(parent, fg_color=C.BG_CARD, corner_radius=8)
-        card.grid(row=row + 1, column=0, sticky='nswe', padx=20,
+        card = ctk.CTkFrame(parent, fg_color=C.BG_CARD, corner_radius=8,
+                            border_width=1, border_color=C.BORDER)
+        card.grid(row=row + 1, column=0, sticky='nswe', padx=24,
                   pady=(0 if row == 0 else 8, 8 if row == 1 else 0))
         card.grid_rowconfigure(3, weight=1)
         card.grid_columnconfigure(0, weight=1)
@@ -494,13 +895,13 @@ class ExcelBridgeApp(ctk.CTk):
         hdr = self._cf(card)
         hdr.grid(row=0, column=0, sticky='ew', padx=12, pady=(8, 2))
         icon_name = 'file' if row == 0 else 'target'
-        self._ilbl(hdr, title, icon_name, font=('sans-serif', self._fs(11), 'bold'),
+        self._ilbl(hdr, title, icon_name, font=('Inter', self._fs(11), 'bold'),
                    text_color=C.TEXT_TITLE).pack(side='left')
 
         # 状态徽章
         badge = ctk.CTkFrame(hdr, fg_color='#E5E7EB', corner_radius=6, height=20)
         badge.pack(side='right')
-        status_label = ctk.CTkLabel(badge, text="等待选择", font=('sans-serif', self._fs(9)),
+        status_label = ctk.CTkLabel(badge, text="等待选择", font=('Inter', self._fs(9)),
                                      text_color=C.TEXT_HELP)
         status_label.pack(padx=8)
 
@@ -516,49 +917,58 @@ class ExcelBridgeApp(ctk.CTk):
             ld.pack(side='left', padx=(0, 8))
             dot = ctk.CTkFrame(ld, fg_color=c, width=8, height=8, corner_radius=6)
             dot.pack(side='left', padx=(6, 4), pady=4)
-            ctk.CTkLabel(ld, text=text, font=('sans-serif', self._fs(9)),
+            ctk.CTkLabel(ld, text=text, font=('Inter', self._fs(9)),
                          text_color=c).pack(side='left', padx=(0, 6))
 
         # 列信息
-        info_label = ctk.CTkLabel(leg, text="—", font=('sans-serif', self._fs(9)),
+        info_label = ctk.CTkLabel(leg, text="—", font=('Inter', self._fs(9)),
                      text_color=C.TEXT_MUTED).pack(side='right')
 
         # Sheet 选择器
         sh = self._cf(card)
         sh.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 4))
-        self._ilbl(sh, "Sheet:", "sheet", font=('sans-serif', self._fs(9)),
+        self._ilbl(sh, "Sheet:", "sheet", font=('Inter', self._fs(9)),
                      text_color=C.TEXT_HELP).pack(side='left', padx=(0, 4))
-        sv = ctk.StringVar(value="Sheet1")
-        ctk.CTkComboBox(sh, width=110, height=24, variable=sv,
-                        values=["Sheet1", "Sheet2"], font=('sans-serif', self._fs(9)),
+        sv = ctk.StringVar(value="选择工作表...")
+        ctk.CTkComboBox(sh, width=120, height=24, variable=sv,
+                        values=["选择工作表..."], font=('Inter', self._fs(9)),
                         fg_color=C.BG_WHITE, border_color=C.BORDER,
                         button_color=C.PRIMARY, state='readonly',
                         command=lambda v: self._act(f"切换Sheet: {v}")).pack(side='left')
 
         # 表格
-        tf = ctk.CTkFrame(card, fg_color='transparent', corner_radius=6)
+        tf = ctk.CTkFrame(card, fg_color='transparent', corner_radius=8)
         tf.grid(row=3, column=0, sticky='nswe', padx=8, pady=(0, 8))
         tf.grid_rowconfigure(0, weight=1)
         tf.grid_columnconfigure(0, weight=1)
 
         tree = self._make_table(tf, row == 0)
+        # 空状态引导标签
+        empty_hint = "请先在左侧选择源文件夹和目标模板文件" if row == 0 else "请先选择目标模板文件并加载"
+        empty_label = ctk.CTkLabel(tf, text=empty_hint,
+                                   font=('Inter', 13),
+                                   text_color=C.TEXT_MUTED,
+                                   justify='center')
+        empty_label.place(relx=0.5, rely=0.5, anchor='center')
         # 存引用
         if row == 0:
             self._src_tree = tree
             self._src_status = status_label
             self._src_badge = badge
             self._src_info_label = info_label
+            self._src_empty_label = empty_label
         else:
             self._tgt_tree = tree
             self._tgt_status = status_label
             self._tgt_badge = badge
             self._tgt_info_label = info_label
+            self._tgt_empty_label = empty_label
 
         return card
 
     @staticmethod
-    def _setup_styles(font_size=10):
-        """全局表格和滚动条样式（只执行一次）"""
+    def _setup_styles(font_size=11):
+        """全局表格和滚动条样式"""
         style = ttk.Style()
         if 'clam' in style.theme_names():
             style.theme_use('clam')
@@ -567,11 +977,11 @@ class ExcelBridgeApp(ctk.CTk):
                         borderwidth=0, arrowsize=12)
         style.map('TScrollbar', background=[('active', C.TEXT_MUTED)])
         style.configure('X.Treeview', background=C.BG_WHITE, foreground=C.TEXT_BODY,
-                        fieldbackground=C.BG_WHITE, borderwidth=0, rowheight=24 + font_size,
-                        font=('sans-serif', font_size))
+                        fieldbackground=C.BG_WHITE, borderwidth=0, rowheight=40,
+                        font=('JetBrains Mono', font_size))
         style.configure('X.Treeview.Heading', background=C.TBL_HDR_BG,
                         foreground=C.TBL_HDR_FG, borderwidth=0, relief='flat',
-                        font=('sans-serif', font_size, 'bold'), padding=(6, 5))
+                        font=('Inter', font_size, 'bold'), padding=(8, 6))
         style.map('X.Treeview.Heading', background=[('active', '#E2E8F0')])
         style.configure('even.X', background=C.TBL_EVEN)
         style.configure('odd.X', background=C.TBL_ODD)
@@ -615,47 +1025,53 @@ class ExcelBridgeApp(ctk.CTk):
 
     def _build_right(self):
         R = ctk.CTkFrame(self, fg_color=C.BG_SIDEBAR_R, corner_radius=0)
-        R.grid(row=0, column=2, sticky='nswe')
+        R.grid(row=1, column=2, sticky='nswe')
         ctk.CTkFrame(R, fg_color=C.BORDER, width=1).place(relx=0, rely=0, relheight=1, anchor='nw')
         R.grid_columnconfigure(0, weight=1)
         R.grid_rowconfigure(3, weight=1)  # 按钮+日志区自动扩展
 
         # 操作指引卡片
-        gcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
-        gcard.grid(row=0, column=0, sticky='ew', padx=14, pady=(16, 8))
-        self._ilbl(gcard, "操作指引", "guide", font=('sans-serif', self._fs(11), 'bold'),
+        gcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8,
+                             border_width=1, border_color=C.BORDER)
+        gcard.grid(row=0, column=0, sticky='ew', padx=16, pady=(16, 8))
+        self._ilbl(gcard, "操作指引", "guide", font=('Inter', self._fs(11), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
                                                     padx=12, pady=(10, 2))
-        self._help_var = ctk.StringVar(value=" 请先在左侧选择源文件夹和目标模板文件")
-        ctk.CTkLabel(gcard, textvariable=self._help_var, font=('sans-serif', self._fs(10)),
+        self._help_var = ctk.StringVar(value=" 请先在左侧面板选择源文件夹和目标模板文件，然后点击文件列表中的文件名加载数据。")
+        ctk.CTkLabel(gcard, textvariable=self._help_var, font=('Inter', self._fs(10)),
                      text_color=C.TEXT_HELP, justify='left', anchor='w',
                      wraplength=220).grid(row=1, column=0, sticky='w',
                                            padx=12, pady=(2, 10))
 
         # 映射规则卡片
-        rcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
-        rcard.grid(row=1, column=0, sticky='ew', padx=14, pady=(0, 8))
-        self._ilbl(rcard, "映射规则", "rules", font=('sans-serif', self._fs(11), 'bold'),
+        rcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8,
+                             border_width=1, border_color=C.BORDER)
+        rcard.grid(row=1, column=0, sticky='ew', padx=16, pady=(0, 8))
+        self._ilbl(rcard, "映射规则", "rules", font=('Inter', self._fs(11), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
                                                     padx=12, pady=(10, 6))
 
         rules = [
-            (" 复制列", '_map_copy', C.COPY_BLUE),
-            (" 源匹配键", '_map_match', C.MATCH_ORANGE),
-            (" 目标匹配键", '_map_tkey', C.TARGET_GREEN),
-            (" 粘贴至", '_map_paste', C.PASTE_PURPLE),
+            ("复制列", '_map_copy', C.COPY_BLUE),
+            ("匹配键", '_map_match', C.MATCH_ORANGE),
+            ("目标键", '_map_tkey', C.TARGET_GREEN),
+            ("粘贴至", '_map_paste', C.PASTE_PURPLE),
         ]
         self._rule_rows = []
         for i, (label, attr, color) in enumerate(rules):
             rf = self._cf(rcard)
-            rf.grid(row=i + 1, column=0, sticky='ew', padx=12, pady=2)
-            dot = ctk.CTkFrame(rf, fg_color=C.BORDER, width=8, height=8, corner_radius=6)
-            dot.grid(row=0, column=0, padx=(0, 6))
-            dot.grid_propagate(False)
-            vl = ctk.CTkLabel(rf, text=f"{label}  — 待设置", font=('sans-serif', self._fs(10)),
+            rf.grid(row=i + 1, column=0, sticky='ew', padx=12, pady=4)
+            # 药丸标签
+            pill = ctk.CTkFrame(rf, fg_color=C.M3_SURFACE_DIM, corner_radius=12, height=24)
+            pill.grid(row=0, column=0, padx=(0, 8))
+            pill_text = ctk.CTkLabel(pill, text=label, font=('Inter', self._fs(9), 'bold'),
+                                     text_color=C.TEXT_MUTED)
+            pill_text.pack(padx=8, pady=2)
+            # 状态文字
+            vl = ctk.CTkLabel(rf, text="待设置", font=('Inter', self._fs(10)),
                               text_color=C.TEXT_MUTED, anchor='w')
             vl.grid(row=0, column=1, sticky='w')
-            self._rule_rows.append((dot, vl, attr, color))
+            self._rule_rows.append((pill, pill_text, vl, attr, color))
 
         self._btn(rcard, "清除映射", None, 26, 'transparent', C.ERROR, 'FEE2E2',
                   lambda: self._act("清除映射")).grid(row=5, column=0, sticky='w',
@@ -663,7 +1079,7 @@ class ExcelBridgeApp(ctk.CTk):
 
         # 执行按钮 + 内嵌日志
         acard = ctk.CTkFrame(R, fg_color='transparent')
-        acard.grid(row=3, column=0, sticky='nsew', padx=14, pady=(0, 12))
+        acard.grid(row=3, column=0, sticky='nsew', padx=16, pady=(0, 12))
         acard.grid_columnconfigure(0, weight=1)
         acard.grid_rowconfigure(4, weight=1)  # 日志区自动填充
 
@@ -671,20 +1087,20 @@ class ExcelBridgeApp(ctk.CTk):
                   lambda: self._act("预览匹配结果"), icon='search').grid(
             row=0, column=0, sticky='ew', pady=(0, 8))
 
-        self._btn(acard, "确认并写入", None, 45, C.PRIMARY, 'white', C.PRIMARY_HOVER,
+        self._btn(acard, "确认并写入", None, 48, C.PRIMARY, 'white', C.PRIMARY_HOVER,
                   lambda: self._open_preview_window(), bold=True, icon='rocket').grid(
             row=1, column=0, sticky='ew', pady=(0, 6))
 
         self._status_var = ctk.StringVar(value="就绪")
-        ctk.CTkLabel(acard, textvariable=self._status_var, font=('sans-serif', self._fs(10)),
+        ctk.CTkLabel(acard, textvariable=self._status_var, font=('Inter', self._fs(10)),
                      text_color=C.TEXT_MUTED).grid(row=2, column=0, pady=(0, 4))
 
         # 内嵌迷你日志
         self._mini_log = ctk.CTkTextbox(acard,
                                          fg_color=C.BG_WHITE,
                                          text_color=C.TEXT_HELP,
-                                         font=('monospace', self._fs(9)),
-                                         border_width=0, corner_radius=6, wrap='word')
+                                         font=('JetBrains Mono', self._fs(9)),
+                                         border_width=0, corner_radius=8, wrap='word')
         self._mini_log.grid(row=4, column=0, sticky='nsew', pady=(4, 0))
         # 日志颜色标签
         self._mini_log.tag_config('info', foreground=C.TEXT_HELP)
@@ -694,31 +1110,32 @@ class ExcelBridgeApp(ctk.CTk):
         self._mini_log.insert('1.0', '就绪 — 点击「 详细日志」查看完整记录')
         self._mini_log.configure(state='disabled')
 
-        # 日志 + 关于按钮（同行两栏）
+# 日志 + 关于按钮（同行两栏）
         btn_row = ctk.CTkFrame(acard, fg_color='transparent')
         btn_row.grid(row=5, column=0, sticky='ew', pady=(4, 0))
         btn_row.grid_columnconfigure(0, weight=1)
         btn_row.grid_columnconfigure(1, weight=1)
         ctk.CTkButton(btn_row, text="详细日志", image=self._icn('log'), compound='left', height=26,
                       fg_color='transparent', text_color=C.TEXT_HELP,
-                      hover_color='#E5E7EB', corner_radius=6,
-                      font=('sans-serif', self._fs(10)),
+                      hover_color='#E5E7EB', corner_radius=8,
+                      font=('Inter', self._fs(10)),
                       command=self._open_log_window).grid(row=0, column=0, sticky='ew', padx=(0, 3))
         ctk.CTkButton(btn_row, text="关于", image=self._icn('info'), compound='left', height=26,
                       fg_color='transparent', text_color=C.TEXT_HELP,
-                      hover_color='#E5E7EB', corner_radius=6,
-                      font=('sans-serif', self._fs(10)),
+                      hover_color='#E5E7EB', corner_radius=8,
+                      font=('Inter', self._fs(10)),
                       command=self._open_about).grid(row=0, column=1, sticky='ew', padx=(3, 0))
 
     # ── 按钮工厂（统一圆角消除锯齿）──
 
     def _btn(self, parent, text, width, height, fg, text_color, hover,
-             command, anchor='center', border=0, border_color=None, bold=False, icon=None):
+             command, anchor='center', border=0, border_color=None, bold=False, icon=None,
+             font_size=None):
+        fs = font_size if font_size else (self._fs(16) if height >= 48 else self._fs(12) if height >= 34 else self._fs(10))
         kwargs = dict(
             text=text, height=height, fg_color=fg, text_color=text_color,
-            hover_color=f'#{hover.lstrip("#")}', corner_radius=8 if height >= 34 else 6,
-            font=('sans-serif', self._fs(12) if height >= 34 else self._fs(10),
-                  'bold' if bold else 'normal'),
+            hover_color=f'#{hover.lstrip("#")}', corner_radius=8,
+            font=('Inter', fs, 'bold' if bold else 'normal'),
             command=command,
             border_width=0,  # 不用边框，避免圆角断裂
         )
@@ -879,15 +1296,15 @@ class ExcelBridgeApp(ctk.CTk):
             if i < self._step:
                 dot.configure(fg_color=C.SUCCESS)
                 dl.configure(text='')
-                tl.configure(text_color=C.SUCCESS, font=('sans-serif', self._fs(10), 'bold'))
+                tl.configure(text_color=C.SUCCESS, font=('Inter', self._fs(10), 'bold'))
             elif i == self._step:
                 dot.configure(fg_color=C.PRIMARY)
                 dl.configure(text=str(i+1))
-                tl.configure(text_color=C.PRIMARY, font=('sans-serif', self._fs(10), 'bold'))
+                tl.configure(text_color=C.PRIMARY, font=('Inter', self._fs(10), 'bold'))
             else:
                 dot.configure(fg_color=C.BORDER)
                 dl.configure(text=str(i+1))
-                tl.configure(text_color=C.TEXT_HELP, font=('sans-serif', self._fs(10)))
+                tl.configure(text_color=C.TEXT_HELP, font=('Inter', self._fs(10)))
 
         # 规则卡片
         mapping_vals = {
@@ -896,19 +1313,19 @@ class ExcelBridgeApp(ctk.CTk):
             '_map_tkey': (self._map_tkey, self._map_tkey_val),
             '_map_paste': (self._map_paste, self._map_paste_val),
         }
-        for dot, vl, attr, color in self._rule_rows:
+        for pill, pill_text, vl, attr, color in self._rule_rows:
             col_idx, cell_val = mapping_vals[attr]
             if col_idx is not None:
-                dot.configure(fg_color=color)
-                prefix = vl.cget('text').lstrip().split(' ', 1)[0]
-                label_text = f"{prefix}  {chr(65+col_idx)}列"
+                pill.configure(fg_color=color)
+                pill_text.configure(text_color='white')
+                label_text = f"{chr(65+col_idx)}列"
                 if cell_val:
                     label_text += f" \"{cell_val[:12]}\""
                 vl.configure(text=label_text, text_color=color)
             else:
-                dot.configure(fg_color=C.BORDER)
-                prefix = vl.cget('text').lstrip().split(' ', 1)[0]
-                vl.configure(text=f"{prefix}  — 待设置", text_color=C.TEXT_MUTED)
+                pill.configure(fg_color=C.M3_SURFACE_DIM)
+                pill_text.configure(text_color=C.TEXT_MUTED)
+                vl.configure(text="待设置", text_color=C.TEXT_MUTED)
 
     def _open_preview_window(self):
         """弹出预览匹配结果窗口 — 使用真实加载的数据"""
@@ -921,7 +1338,7 @@ class ExcelBridgeApp(ctk.CTk):
         hb = self._cf(win)
         hb.pack(fill='x', padx=16, pady=(16, 8))
         ctk.CTkLabel(hb, text="预览确认 — 以下数据将写入目标文件",
-                     font=('sans-serif', self._fs(14), 'bold'),
+                     font=('Inter', self._fs(14), 'bold'),
                      text_color=C.TEXT_TITLE).pack(side='left')
 
         # 检查映射是否完整
@@ -929,10 +1346,10 @@ class ExcelBridgeApp(ctk.CTk):
             empty = ctk.CTkFrame(win, fg_color='#F9FAFB', corner_radius=8)
             empty.pack(fill='both', expand=True, padx=16, pady=(0, 12))
             ctk.CTkLabel(empty, text=" 尚未完成映射",
-                         font=('sans-serif', self._fs(16), 'bold'),
+                         font=('Inter', self._fs(16), 'bold'),
                          text_color=C.TEXT_MUTED).pack(expand=True)
             ctk.CTkLabel(empty, text="请先标记源文件的复制列和匹配键，以及目标文件的匹配键和粘贴列。",
-                         font=('sans-serif', self._fs(11)),
+                         font=('Inter', self._fs(11)),
                          text_color=C.TEXT_HELP).pack(expand=True, pady=(0, 20))
             ctk.CTkButton(win, text="关闭", width=80, height=34,
                           fg_color=C.PRIMARY, text_color='white',
@@ -972,7 +1389,7 @@ class ExcelBridgeApp(ctk.CTk):
 
         # 显示真实数据
         stats = f"共 {len(entries)} 条"
-        ctk.CTkLabel(hb, text=stats, font=('sans-serif', self._fs(11)),
+        ctk.CTkLabel(hb, text=stats, font=('Inter', self._fs(11)),
                      text_color=C.TEXT_HELP).pack(side='right')
 
         if not entries:
@@ -980,18 +1397,18 @@ class ExcelBridgeApp(ctk.CTk):
             empty.pack(fill='both', expand=True, padx=16, pady=(0, 12))
             if preview_error:
                 ctk.CTkLabel(empty, text="️ " + preview_error,
-                             font=('sans-serif', self._fs(13), 'bold'),
+                             font=('Inter', self._fs(13), 'bold'),
                              text_color=C.ERROR, wraplength=600).pack(expand=True, padx=20)
             else:
                 ctk.CTkLabel(empty, text=" 未找到匹配数据",
-                             font=('sans-serif', self._fs(14), 'bold'),
+                             font=('Inter', self._fs(14), 'bold'),
                              text_color=C.TEXT_MUTED).pack(expand=True)
                 ctk.CTkLabel(empty, text="源文件夹和目标文件中没有匹配的数据。",
-                             font=('sans-serif', self._fs(11)),
+                             font=('Inter', self._fs(11)),
                              text_color=C.TEXT_HELP).pack(expand=True, pady=(0, 10))
                 ctk.CTkLabel(empty,
                              text=f"源: {source_dir}\n目标: {target_path}",
-                             font=('sans-serif', self._fs(9)),
+                             font=('Inter', self._fs(9)),
                              text_color=C.TEXT_MUTED).pack(expand=True, pady=(0, 10))
             ctk.CTkButton(win, text="关闭", width=80, height=34,
                           fg_color=C.PRIMARY, text_color='white',
@@ -1006,7 +1423,7 @@ class ExcelBridgeApp(ctk.CTk):
         ch.pack(fill='x')
         ch.pack_propagate(False)
         for w, t in [(30, ''), (90, '匹配键'), (130, '来源文件'), (280, '要写入的值')]:
-            ctk.CTkLabel(ch, text=t, width=w, font=('sans-serif', self._fs(9), 'bold'),
+            ctk.CTkLabel(ch, text=t, width=w, font=('Inter', self._fs(9), 'bold'),
                          text_color=C.TEXT_HELP).pack(side='left', padx=(4, 0))
 
         self._preview_entries = []
@@ -1020,11 +1437,11 @@ class ExcelBridgeApp(ctk.CTk):
                                   checkbox_width=16, checkbox_height=16,
                                   border_width=1, corner_radius=6, width=24)
             cb.pack(side='left', padx=(4, 0))
-            ctk.CTkLabel(row, text=key, width=90, font=('sans-serif', self._fs(10)),
+            ctk.CTkLabel(row, text=key, width=90, font=('Inter', self._fs(10)),
                          text_color=C.TEXT_BODY).pack(side='left', padx=(4, 0))
-            ctk.CTkLabel(row, text=fname, width=130, font=('sans-serif', self._fs(10)),
+            ctk.CTkLabel(row, text=fname, width=130, font=('Inter', self._fs(10)),
                          text_color=C.TEXT_HELP).pack(side='left', padx=(4, 0))
-            ctk.CTkLabel(row, text=val, font=('sans-serif', self._fs(10)),
+            ctk.CTkLabel(row, text=val, font=('Inter', self._fs(10)),
                          text_color=C.TEXT_BODY).pack(side='left', fill='x', expand=True, padx=(4, 0))
             self._preview_entries.append((key, val, fname, cb_var))
 
@@ -1105,7 +1522,7 @@ class ExcelBridgeApp(ctk.CTk):
         tb = self._cf(win)
         tb.pack(fill='x', padx=16, pady=(16, 8))
         self._ilbl(tb, "日志输出", "log",
-                     font=('sans-serif', self._fs(14), 'bold'),
+                     font=('Inter', self._fs(14), 'bold'),
                      text_color=C.TEXT_TITLE).pack(side='left')
 
         def copy_all():
@@ -1114,11 +1531,11 @@ class ExcelBridgeApp(ctk.CTk):
 
         ctk.CTkButton(tb, text="复制全部", image=self._icn('log'), compound='left', width=100, height=28,
                       fg_color='#F3F4F6', text_color=C.TEXT_HELP,
-                      corner_radius=6,
+                      corner_radius=8,
                       command=copy_all).pack(side='right')
 
         log_box = ctk.CTkTextbox(win, fg_color='#F9FAFB', text_color=C.TEXT_BODY,
-                                  font=('monospace', self._fs(10)), border_width=0,
+                                  font=('JetBrains Mono', self._fs(10)), border_width=0,
                                   corner_radius=8)
         log_box.pack(fill='both', expand=True, padx=16, pady=(4, 16))
         # 日志颜色标签
@@ -1148,10 +1565,10 @@ class ExcelBridgeApp(ctk.CTk):
         hdr = self._cf(win)
         hdr.pack(fill='x', padx=24, pady=(24, 8))
         ctk.CTkLabel(hdr, text="ExcelBridge V1.0",
-                     font=('sans-serif', self._fs(22), 'bold'),
+                     font=('Inter', self._fs(22), 'bold'),
                      text_color=C.TEXT_TITLE).pack()
         ctk.CTkLabel(hdr, text="Excel 数据批量匹配迁移工具",
-                     font=('sans-serif', self._fs(12)),
+                     font=('Inter', self._fs(12)),
                      text_color=C.TEXT_HELP).pack(pady=(4, 0))
         ctk.CTkFrame(win, fg_color=C.BORDER, height=1).pack(fill='x', padx=24)
 
@@ -1178,20 +1595,20 @@ class ExcelBridgeApp(ctk.CTk):
         ]
         for section, items in features:
             ctk.CTkLabel(sf, text=section,
-                         font=('sans-serif', self._fs(12), 'bold'),
+                         font=('Inter', self._fs(12), 'bold'),
                          text_color=C.TEXT_TITLE).pack(anchor='w', pady=(10, 4))
             for item in items:
                 ctk.CTkLabel(sf, text=f"  •  {item}",
-                             font=('sans-serif', self._fs(11)),
+                             font=('Inter', self._fs(11)),
                              text_color=C.TEXT_BODY).pack(anchor='w')
 
         # 作者（在滚动区底部）
         ctk.CTkFrame(sf, fg_color=C.BORDER, height=1).pack(fill='x', pady=(12, 8))
         ctk.CTkLabel(sf, text="作者：D_star  ·  GZZYTZ",
-                     font=('sans-serif', self._fs(12)),
+                     font=('Inter', self._fs(12)),
                      text_color=C.TEXT_TITLE).pack()
         ctk.CTkLabel(sf, text="© 2026",
-                     font=('sans-serif', self._fs(10)),
+                     font=('Inter', self._fs(10)),
                      text_color=C.TEXT_MUTED).pack()
 
         # 关闭按钮（固定不滚动）
