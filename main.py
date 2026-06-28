@@ -41,7 +41,7 @@ from excel_reader import find_files, read_excel, get_relative_path
 
 class C:
     # ── M3 Surface 层级 ──
-    M3_SURFACE                  = '#F8F9FA'   # 应用画布（Level 0）
+    M3_SURFACE                  = '#EDEEEF'   # 应用画布（Level 0，与卡片白有明显色差）
     M3_SURFACE_CONTAINER_LOWEST = '#FFFFFF'   # 卡片/面板（Level 1）
     M3_SURFACE_DIM              = '#D9DADB'   # 表头暗底
 
@@ -130,7 +130,9 @@ class ExcelBridgeApp(ctk.CTk):
         if self._is_windows:
             self.overrideredirect(True)
             self._fix_window_styles()
-        self.title("ExcelBridge V1.0 — 数据批量匹配迁移工具")  # 任务栏标识
+            self._window_round_radius = 6   # 窗口圆角半径（SetWindowRgn 无抗锯齿，小值更平滑）
+            self.after(300, self._apply_window_round_corners)
+        self.title("ExcelBridge V1.1 — 数据批量匹配迁移工具")  # 任务栏标识
         self.geometry("1400x850")
         self.minsize(1200, 700)
         ctk.set_appearance_mode("light")
@@ -226,6 +228,29 @@ class ExcelBridgeApp(ctk.CTk):
         except Exception:
             pass
 
+    def _apply_window_round_corners(self, event=None):
+        """用 SetWindowRgn 给 overrideredirect 窗口切出圆角"""
+        if self._maximized:
+            # 最大化时恢复矩形区域
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                ctypes.windll.user32.SetWindowRgn(hwnd, 0, True)
+            except Exception:
+                pass
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            r = self._window_round_radius
+            w = self.winfo_width()
+            h = self.winfo_height()
+            # CreateRoundRectRgn(left, top, right, bottom, ellipse_w, ellipse_h)
+            hrgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+            ctypes.windll.user32.SetWindowRgn(hwnd, hrgn, True)
+        except Exception:
+            pass
+
     def _get_work_area(self):
         """获取屏幕工作区域（排除任务栏）"""
         import ctypes
@@ -261,6 +286,7 @@ class ExcelBridgeApp(ctk.CTk):
             self.geometry('{:d}x{:d}+{:d}+{:d}'.format(w, h, left, top))
             self._maximized = True
             self._max_btn.configure(image=self._res_norm_icon)
+        self.after(150, self._apply_window_round_corners)
 
     def _titlebar_close(self):
         self.destroy()
@@ -389,6 +415,7 @@ class ExcelBridgeApp(ctk.CTk):
         self.geometry('{:d}x{:d}+{:d}+{:d}'.format(new_w, new_h, new_x, new_y))
         self._drag_start_x = event.x_root
         self._drag_start_y = event.y_root
+        self.after(50, self._apply_window_round_corners)
 
     def _on_root_double(self, event):
         """双击标题栏 → 最大化/还原"""
@@ -448,7 +475,7 @@ class ExcelBridgeApp(ctk.CTk):
         h = self._fs(36)
         self._titlebar_h = h
 
-        bar = ctk.CTkFrame(self, fg_color=C.BG_WHITE, height=h, corner_radius=0)
+        bar = ctk.CTkFrame(self, fg_color=C.BG_MAIN, height=h, corner_radius=0)
         bar.grid(row=0, column=0, columnspan=3, sticky='ew')
         bar.grid_propagate(False)
         # 底部分隔线
@@ -573,6 +600,8 @@ class ExcelBridgeApp(ctk.CTk):
         self._build_right()
         self._sync_ui()
         self._save_config()
+        if self._is_windows:
+            self.after(200, self._apply_window_round_corners)
 
     def _fs(self, size):
         base = int(self._font_var.get()) if hasattr(self, '_font_var') else 12
@@ -690,7 +719,6 @@ class ExcelBridgeApp(ctk.CTk):
         # 文件列表（动态扫描）
         self._file_frame = ctk.CTkScrollableFrame(
             L, fg_color=C.BG_WHITE, corner_radius=8,
-            border_width=1, border_color=C.BORDER,
             scrollbar_button_color=C.BORDER,
             scrollbar_button_hover_color=C.TEXT_MUTED)
         self._file_frame.grid(row=2, column=0, sticky='nswe', padx=16, pady=(8, 8))
@@ -833,7 +861,7 @@ class ExcelBridgeApp(ctk.CTk):
     # ── 中间面板 ──
 
     def _build_center(self):
-        C_ = ctk.CTkFrame(self, fg_color=C.BG_WHITE, corner_radius=0)
+        C_ = ctk.CTkFrame(self, fg_color=C.BG_MAIN, corner_radius=0)
         C_.grid(row=1, column=1, sticky='nswe')
         C_.grid_rowconfigure(1, weight=50)  # 源文件预览
         C_.grid_rowconfigure(2, weight=50)  # 目标模板预览（等高）
@@ -857,7 +885,7 @@ class ExcelBridgeApp(ctk.CTk):
                         button_color=C.PRIMARY, state='readonly',
                         command=self._on_font_change).pack(side='left')
 
-        steps = ["① 选择文件", "② 标记字段", "③ 匹配目标", "④ 执行写入"]
+        steps = ["选择文件", "标记字段", "匹配目标", "执行写入"]
         for i, label in enumerate(steps):
             f = self._cf(sb)
             f.grid(row=0, column=i, padx=(0, 12 if i < 3 else 0))
@@ -884,8 +912,7 @@ class ExcelBridgeApp(ctk.CTk):
 
     def _build_preview_card(self, parent, row, title, color1, bg1, color2, bg2):
         """构建单个预览卡片（源或目标）"""
-        card = ctk.CTkFrame(parent, fg_color=C.BG_CARD, corner_radius=8,
-                            border_width=1, border_color=C.BORDER)
+        card = ctk.CTkFrame(parent, fg_color=C.BG_CARD, corner_radius=8)
         card.grid(row=row + 1, column=0, sticky='nswe', padx=24,
                   pady=(0 if row == 0 else 8, 8 if row == 1 else 0))
         card.grid_rowconfigure(3, weight=1)
@@ -1031,8 +1058,7 @@ class ExcelBridgeApp(ctk.CTk):
         R.grid_rowconfigure(3, weight=1)  # 按钮+日志区自动扩展
 
         # 操作指引卡片
-        gcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8,
-                             border_width=1, border_color=C.BORDER)
+        gcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
         gcard.grid(row=0, column=0, sticky='ew', padx=16, pady=(16, 8))
         self._ilbl(gcard, "操作指引", "guide", font=('Inter', self._fs(11), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
@@ -1044,8 +1070,7 @@ class ExcelBridgeApp(ctk.CTk):
                                            padx=12, pady=(2, 10))
 
         # 映射规则卡片
-        rcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8,
-                             border_width=1, border_color=C.BORDER)
+        rcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
         rcard.grid(row=1, column=0, sticky='ew', padx=16, pady=(0, 8))
         self._ilbl(rcard, "映射规则", "rules", font=('Inter', self._fs(11), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
