@@ -34,6 +34,24 @@ from tkinter import ttk, filedialog
 from typing import Optional
 
 from excel_reader import find_files, read_excel, get_relative_path
+from _version import __version__
+
+
+def _build_info():
+    """获取构建信息：git commit 短哈希 + 日期"""
+    import subprocess
+    try:
+        commit = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        date = subprocess.check_output(
+            ['git', 'log', '-1', '--format=%ci'],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()[:10]
+        return "build {} ({})".format(commit, date)
+    except Exception:
+        return ""
 
 
 # ═══ Material 3 色彩系统 ═══
@@ -132,8 +150,8 @@ class ExcelBridgeApp(ctk.CTk):
             self._fix_window_styles()
             self._window_round_radius = 6   # 窗口圆角半径（SetWindowRgn 无抗锯齿，小值更平滑）
             self.after(300, self._apply_window_round_corners)
-        self.title("ExcelBridge V1.1 — 数据批量匹配迁移工具")  # 任务栏标识
-        self.geometry("1400x850")
+        self.title("ExcelBridge V{} — 数据批量匹配迁移工具".format(__version__))  # 任务栏标识
+        self.geometry("1200x700")
         self.minsize(1200, 700)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
@@ -153,7 +171,7 @@ class ExcelBridgeApp(ctk.CTk):
             base_dir=sys._MEIPASS
         else:
             base_dir=os.path.dirname(os.path.abspath(__file__))
-        # 窗口图标（Windows用ico + Win32 API 强制任务栏图标）
+        # 窗口图标
         try:
             ico=os.path.join(base_dir,'icon.ico')
             if os.path.exists(ico):
@@ -162,23 +180,7 @@ class ExcelBridgeApp(ctk.CTk):
             png=os.path.join(base_dir,'_icons','app_icon.png')
             if os.path.exists(png):
                 self.iconphoto(True, tk.PhotoImage(file=png))
-        # Win32 API 设置任务栏图标（overrideredirect 下 iconbitmap 不生效）
-        if self._is_windows:
-            try:
-                import ctypes
-                ico_path = os.path.join(base_dir, 'icon.ico')
-                if os.path.exists(ico_path):
-                    hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-                    # 大图标 (32x32) — 任务栏 / Alt+Tab
-                    hIconBig = ctypes.windll.user32.LoadImageW(0, ico_path, 1, 32, 32, 0x00000010)
-                    if hIconBig:
-                        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hIconBig)  # ICON_BIG
-                    # 小图标 (16x16) — 窗口左上角 / 任务栏小视图
-                    hIconSmall = ctypes.windll.user32.LoadImageW(0, ico_path, 1, 16, 16, 0x00000010)
-                    if hIconSmall:
-                        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hIconSmall)  # ICON_SMALL
-            except Exception:
-                pass
+        self._ico_path = os.path.join(base_dir, 'icon.ico')
         self._icons_dir=os.path.join(base_dir,'_icons')
         os.makedirs(self._icons_dir, exist_ok=True)
         self._icons = {}
@@ -195,6 +197,8 @@ class ExcelBridgeApp(ctk.CTk):
         self._map_tkey_val: str = ""
         self._map_paste_val: str = ""
         self._active_table = 'source'
+        self._src_header_row: int = -1  # 用户必须手动标记源表头行（-1=未设置）
+        self._tgt_header_row: int = 0   # 目标表头行（自动检测，默认行0）
         self._log_lines = []  # 收集日志
         saved_cfg = self._load_config()
         self._saved_font_size = saved_cfg.get('font_size', '12')
@@ -207,11 +211,26 @@ class ExcelBridgeApp(ctk.CTk):
 
     # ═══ 窗口管理（自定义标题栏） ═══
 
+    def _set_taskbar_icon(self):
+        """延迟设置任务栏图标（overrideredirect 下必须在窗口完全创建后调用）"""
+        if not self._is_windows or not os.path.exists(self._ico_path):
+            return
+        try:
+            import ctypes
+            hwnd = self.winfo_id()
+            # 大图标 (32x32) — 任务栏 / Alt+Tab
+            hIcon = ctypes.windll.user32.LoadImageW(0, self._ico_path, 1, 32, 32, 0x00000010)
+            if hIcon:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hIcon)  # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hIcon)  # WM_SETICON ICON_SMALL
+        except Exception:
+            pass
+
     def _fix_window_styles(self):
         """为 overrideredirect 窗口添加最小化/最大化/任务栏支持"""
         try:
             import ctypes
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            hwnd = self.winfo_id()
             # GWL_STYLE = -16: 添加最小化/最大化/系统菜单
             style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
             style |= 0x00020000  # WS_MINIMIZEBOX
@@ -234,14 +253,14 @@ class ExcelBridgeApp(ctk.CTk):
             # 最大化时恢复矩形区域
             try:
                 import ctypes
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                hwnd = self.winfo_id()
                 ctypes.windll.user32.SetWindowRgn(hwnd, 0, True)
             except Exception:
                 pass
             return
         try:
             import ctypes
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            hwnd = self.winfo_id()
             r = self._window_round_radius
             w = self.winfo_width()
             h = self.winfo_height()
@@ -266,7 +285,7 @@ class ExcelBridgeApp(ctk.CTk):
         """最小化窗口（Win32 API，兼容 overrideredirect）"""
         if self._is_windows:
             import ctypes
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            hwnd = self.winfo_id()
             # SW_MINIMIZE = 6
             ctypes.windll.user32.ShowWindow(hwnd, 6)
         else:
@@ -602,6 +621,7 @@ class ExcelBridgeApp(ctk.CTk):
         self._save_config()
         if self._is_windows:
             self.after(200, self._apply_window_round_corners)
+            self.after(300, self._set_taskbar_icon)  # 窗口完全创建后再设任务栏图标
 
     def _fs(self, size):
         base = int(self._font_var.get()) if hasattr(self, '_font_var') else 12
@@ -785,6 +805,7 @@ class ExcelBridgeApp(ctk.CTk):
     def _on_file_select(self, filepath):
         """选中文件 → 加载到源文件预览"""
         self._current_src_path = filepath
+        self._src_header_row = -1  # 强制用户标记表头行，-1 表示未设置
         for p, btn in self._file_buttons.items():
             if p == filepath:
                 btn.configure(fg_color=C.PRIMARY_BG, text_color=C.PRIMARY)
@@ -796,6 +817,7 @@ class ExcelBridgeApp(ctk.CTk):
             data = read_excel(filepath, skip_hidden=skip)
             sheet = list(data.keys())[0]
             rows = data[sheet]
+            self._current_src_rows = rows  # 保存行数据供 _on_cell 获取表头标签
             ncols = max((len(r) for r in rows)) if rows else 10
             # Rebuild table with actual column count
             parent = self._src_tree.master
@@ -817,8 +839,11 @@ class ExcelBridgeApp(ctk.CTk):
                     self._src_info_label.configure(text=f"共 {ncols} 列 · {len(rows)} 行")
                 except Exception:
                     pass
+            # 高亮表头行
+            self._highlight_header_row(self._src_tree)
+            self._start_blink()  # 提醒用户标记表头行
             self._act(f"选择文件: {os.path.basename(filepath)}")
-            self._help_var.set(" 在上方源文件预览中，点击「要复制的数据列」（蓝色标记）和「匹配依据列」（橙色标记）。")
+            self._help_var.set("③ 点击最左侧 ○ 标记表头行  →  ④ 点击数据格标记复制列(蓝) / 匹配键(橙)")
             self._src_status.configure(text="已加载文件")
             self._src_badge.configure(fg_color=C.PRIMARY_BG)
         except Exception as e:
@@ -837,6 +862,15 @@ class ExcelBridgeApp(ctk.CTk):
                 data = read_excel(path, skip_hidden=skip)
                 sheet = list(data.keys())[0]
                 rows = data[sheet]
+                self._current_tgt_rows = rows  # 保存目标行数据供标签提取
+                # 自动检测目标表头行（关键词命中数最多的行）
+                from rule_engine import HEADER_KEYWORDS
+                best, best_hits = 0, 0
+                for i in range(min(8, len(rows))):
+                    hits = sum(1 for c in rows[i] if str(c).strip() in HEADER_KEYWORDS)
+                    if hits > best_hits:
+                        best_hits, best = hits, i
+                self._tgt_header_row = best if best_hits > 0 else 0
                 ncols = max((len(r) for r in rows)) if rows else 10
                 parent = self._tgt_tree.master
                 self._tgt_tree.destroy()
@@ -1012,6 +1046,8 @@ class ExcelBridgeApp(ctk.CTk):
         style.map('X.Treeview.Heading', background=[('active', '#E2E8F0')])
         style.configure('even.X', background=C.TBL_EVEN)
         style.configure('odd.X', background=C.TBL_ODD)
+        style.configure('hl_header.X', background='#DBEAFE',
+                        foreground=C.PRIMARY, font=('Inter', font_size, 'bold'))
         style.configure('hl1.X', background=C.COPY_BG)
         style.configure('hl2.X', background=C.MATCH_BG)
         style.map('X.Treeview', background=[('selected', '#BFDBFE')],
@@ -1032,8 +1068,8 @@ class ExcelBridgeApp(ctk.CTk):
         hsb.grid(row=1, column=0, sticky='ew')
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        tree.column('#0', width=40, minwidth=40, stretch=False, anchor='center')
-        tree.heading('#0', text='')
+        tree.column('#0', width=50, minwidth=50, stretch=False, anchor='center')
+        tree.heading('#0', text='表头' if is_source else '#')
         for c in cols:
             tree.column(c, width=85, minwidth=55, stretch=True, anchor='w')
             tree.heading(c, text=c)
@@ -1055,26 +1091,38 @@ class ExcelBridgeApp(ctk.CTk):
         R.grid(row=1, column=2, sticky='nswe')
         ctk.CTkFrame(R, fg_color=C.BORDER, width=1).place(relx=0, rely=0, relheight=1, anchor='nw')
         R.grid_columnconfigure(0, weight=1)
-        R.grid_rowconfigure(3, weight=1)  # 按钮+日志区自动扩展
+        R.grid_rowconfigure(0, weight=0)  # 占位
+        R.grid_rowconfigure(1, weight=0)  # 操作指引
+        R.grid_rowconfigure(2, weight=0)  # 映射规则
+        R.grid_rowconfigure(3, weight=1)  # 按钮+日志区自动扩展到底部
 
-        # 操作指引卡片
-        gcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
-        gcard.grid(row=0, column=0, sticky='ew', padx=16, pady=(16, 8))
-        self._ilbl(gcard, "操作指引", "guide", font=('Inter', self._fs(11), 'bold'),
+        # ── 占位行（对齐中间步骤条）──
+        spacer = ctk.CTkFrame(R, fg_color='transparent', height=self._fs(48))
+        spacer.grid(row=0, column=0, sticky='ew')
+        spacer.grid_propagate(False)
+
+        # ── 操作指引卡片 ──
+        self._guide_card = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
+        self._guide_card.grid(row=1, column=0, sticky='ew', padx=16, pady=(0, 8))
+        self._guide_card.grid_columnconfigure(0, weight=1)
+        self._ilbl(self._guide_card, "操作指引", "guide", font=('Inter', self._fs(12), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
-                                                    padx=12, pady=(10, 2))
-        self._help_var = ctk.StringVar(value=" 请先在左侧面板选择源文件夹和目标模板文件，然后点击文件列表中的文件名加载数据。")
-        ctk.CTkLabel(gcard, textvariable=self._help_var, font=('Inter', self._fs(10)),
-                     text_color=C.TEXT_HELP, justify='left', anchor='w',
-                     wraplength=220).grid(row=1, column=0, sticky='w',
-                                           padx=12, pady=(2, 10))
+                                                    padx=14, pady=(12, 4))
+        self._help_var = ctk.StringVar(value="① 选择源文件夹和目标模板\n② 点击文件列表加载源文件\n③ 点击行号 ○ 标记表头行\n④ 点击数据格标记复制列 / 匹配键\n⑤ 在目标模板标记匹配键 / 粘贴列\n⑥ 点击「预览匹配结果」执行")
+        ctk.CTkLabel(self._guide_card, textvariable=self._help_var, font=('Inter', self._fs(11)),
+                     text_color=C.TEXT_BODY, justify='left', anchor='w',
+                     wraplength=268).grid(row=1, column=0, sticky='w',
+                                           padx=14, pady=(4, 14))
+        self._blink_id = None  # 闪烁动画 ID
 
-        # 映射规则卡片
+        # ── 映射规则卡片（2×2 网格，紧凑布局）──
         rcard = ctk.CTkFrame(R, fg_color=C.BG_WHITE, corner_radius=8)
-        rcard.grid(row=1, column=0, sticky='ew', padx=16, pady=(0, 8))
+        rcard.grid(row=2, column=0, sticky='ew', padx=16, pady=(0, 8))
+        rcard.grid_columnconfigure(0, weight=1)
+        rcard.grid_columnconfigure(1, weight=1)
         self._ilbl(rcard, "映射规则", "rules", font=('Inter', self._fs(11), 'bold'),
                      text_color=C.TEXT_TITLE).grid(row=0, column=0, sticky='w',
-                                                    padx=12, pady=(10, 6))
+                                                    columnspan=2, padx=12, pady=(8, 4))
 
         rules = [
             ("复制列", '_map_copy', C.COPY_BLUE),
@@ -1084,29 +1132,36 @@ class ExcelBridgeApp(ctk.CTk):
         ]
         self._rule_rows = []
         for i, (label, attr, color) in enumerate(rules):
+            row = i // 2      # 0, 0, 1, 1
+            col = i % 2       # 0, 1, 0, 1
             rf = self._cf(rcard)
-            rf.grid(row=i + 1, column=0, sticky='ew', padx=12, pady=4)
+            rf.grid(row=row + 1, column=col, sticky='ew', padx=(12 if col == 0 else 4, 12 if col == 1 else 4), pady=2)
+            rf.grid_columnconfigure(1, weight=1)
             # 药丸标签
-            pill = ctk.CTkFrame(rf, fg_color=C.M3_SURFACE_DIM, corner_radius=12, height=24)
-            pill.grid(row=0, column=0, padx=(0, 8))
-            pill_text = ctk.CTkLabel(pill, text=label, font=('Inter', self._fs(9), 'bold'),
+            pill = ctk.CTkFrame(rf, fg_color=C.M3_SURFACE_DIM, corner_radius=10, height=20)
+            pill.grid(row=0, column=0, padx=(0, 4))
+            pill_text = ctk.CTkLabel(pill, text=label, font=('Inter', self._fs(8), 'bold'),
                                      text_color=C.TEXT_MUTED)
-            pill_text.pack(padx=8, pady=2)
+            pill_text.pack(padx=6, pady=1)
             # 状态文字
-            vl = ctk.CTkLabel(rf, text="待设置", font=('Inter', self._fs(10)),
+            vl = ctk.CTkLabel(rf, text="待设置", font=('Inter', self._fs(9)),
                               text_color=C.TEXT_MUTED, anchor='w')
             vl.grid(row=0, column=1, sticky='w')
             self._rule_rows.append((pill, pill_text, vl, attr, color))
 
-        self._btn(rcard, "清除映射", None, 26, 'transparent', C.ERROR, 'FEE2E2',
-                  lambda: self._act("清除映射")).grid(row=5, column=0, sticky='w',
-                                                       padx=(12, 0), pady=(4, 10))
+        self._btn(rcard, "清除映射", None, 24, 'transparent', C.ERROR, 'FEE2E2',
+                  lambda: self._act("清除映射")).grid(row=3, column=0, sticky='w',
+                                                       columnspan=2, padx=(12, 0), pady=(4, 8))
 
-        # 执行按钮 + 内嵌日志
+        # ── 执行按钮 + 内嵌日志 ──
         acard = ctk.CTkFrame(R, fg_color='transparent')
         acard.grid(row=3, column=0, sticky='nsew', padx=16, pady=(0, 12))
         acard.grid_columnconfigure(0, weight=1)
-        acard.grid_rowconfigure(4, weight=1)  # 日志区自动填充
+        acard.grid_rowconfigure(0, weight=0)
+        acard.grid_rowconfigure(1, weight=0)
+        acard.grid_rowconfigure(2, weight=0)
+        acard.grid_rowconfigure(4, weight=1)  # 迷你日志撑满剩余空间
+        acard.grid_rowconfigure(5, weight=0)  # 底部按钮贴底
 
         self._btn(acard, "预览匹配结果", None, 38, C.PRIMARY_BG, C.PRIMARY, '#DBEAFE',
                   lambda: self._act("预览匹配结果"), icon='search').grid(
@@ -1215,7 +1270,7 @@ class ExcelBridgeApp(ctk.CTk):
             self._step = max(self._step, 1)
         elif "选择文件" in msg:
             self._step = max(self._step, 1)
-            self._help_var.set(" 在上方源文件预览中，点击「要复制的数据列」（蓝色标记）和「匹配依据列」（橙色标记）。")
+            self._help_var.set("③ 点击最左侧 ○ 标记表头行  →  ④ 点击数据格标记复制列(蓝) / 匹配键(橙)")
             self._src_status.configure(text="已加载文件")
             self._src_badge.configure(fg_color=C.PRIMARY_BG)
         elif "预览匹配结果" in msg:
@@ -1224,11 +1279,98 @@ class ExcelBridgeApp(ctk.CTk):
             self._step = 4
             self._status_var.set("写入中...")
             self.after(1000, lambda: self._status_var.set("✅ 写入完成 "))
-            self._help_var.set(" 写入完成！请点击「 查看日志」查看详细结果。")
+            self._help_var.set("✅ 写入完成！请点击「详细日志」查看结果")
         elif "打开日志窗口" in msg:
             self._open_log_window()
 
         self._sync_ui()
+
+    def _start_blink(self):
+        """开始红色闪烁 — 提醒用户查看操作指引"""
+        if self._blink_id is not None:
+            return  # 已在闪烁
+        self._blink_state = False
+        self._do_blink()
+
+    def _do_blink(self):
+        """执行一次闪烁切换"""
+        if getattr(self, '_src_header_row', -1) >= 0:
+            # 表头已标记，停止闪烁恢复白色
+            try:
+                self._guide_card.configure(fg_color=C.BG_WHITE)
+            except Exception:
+                pass
+            self._blink_id = None
+            return
+        self._blink_state = not self._blink_state
+        color = '#FEE2E2' if self._blink_state else C.BG_WHITE  # 浅红 ↔ 白
+        try:
+            self._guide_card.configure(fg_color=color)
+        except Exception:
+            pass
+        self._blink_id = self.after(600, self._do_blink)
+
+    def _stop_blink(self):
+        """停止闪烁，恢复白色"""
+        if self._blink_id is not None:
+            self.after_cancel(self._blink_id)
+            self._blink_id = None
+        try:
+            self._guide_card.configure(fg_color=C.BG_WHITE)
+        except Exception:
+            pass
+
+    def _get_col_header(self, col_idx, fallback='', is_source=True):
+        """从表头行获取列标题。
+
+        用于自动标签匹配：用户可能点击数据行单元格，
+        但我们取表头行的值作为列标签，以便在其他文件中
+        按表头名称定位正确的列。
+
+        Args:
+            col_idx: 列索引
+            fallback: 无法获取时返回的默认值
+            is_source: True=源文件表头行, False=目标文件首行
+
+        Returns:
+            表头值字符串，不可用时返回 fallback
+        """
+        rows = getattr(self, '_current_src_rows', None) if is_source else getattr(self, '_current_tgt_rows', None)
+        if not rows:
+            return fallback
+        hdr_row = getattr(self, '_src_header_row', -1) if is_source else getattr(self, '_tgt_header_row', 0)
+        if is_source and hdr_row < 0:
+            return fallback  # 用户尚未标记表头行
+        try:
+            if hdr_row < len(rows) and col_idx < len(rows[hdr_row]):
+                header_val = str(rows[hdr_row][col_idx]).strip()
+            else:
+                return fallback
+        except (IndexError, TypeError):
+            return fallback
+        # 表头值应该是非空、非纯数字的文本
+        if header_val and not header_val.replace('.', '').replace('-', '').isdigit():
+            return header_val
+        return fallback
+
+    def _highlight_header_row(self, tree):
+        """刷新源文件预览中的表头行指示器和样式
+
+        表头行：行号列显示 ●  + 蓝色背景高亮
+        非表头行：行号列显示 ○ + 移除高亮
+        """
+        for iid in tree.get_children():
+            row_idx = int(iid)
+            is_header = (row_idx == self._src_header_row and self._src_header_row >= 0)
+            # 行号指示器
+            display_num = row_idx + 1
+            tree.item(iid, text=f"{'●' if is_header else '○'} {display_num}")
+            # 样式标签
+            current = list(tree.item(iid, 'tags'))
+            current = [t for t in current if t != 'hl_header.X']
+            if is_header:
+                current.append('hl_header.X')
+            tree.item(iid, tags=tuple(current))
 
     def _on_cell(self, event, tree, is_source):
         """点击表格单元格 → 模拟映射标记"""
@@ -1237,11 +1379,23 @@ class ExcelBridgeApp(ctk.CTk):
         col_str = tree.identify_column(event.x)
         if not row or not col_str:
             return
-        # 忽略行号列的点击（避免误映射到 A 列）
-        if col_str == '#0':
-            return
 
         row_idx = int(row)
+
+        # 点击行号列（#0）→ 标记该行为表头行
+        if col_str == '#0' and is_source:
+            self._src_header_row = row_idx
+            self._highlight_header_row(tree)
+            # 更新列标签（表头行变了，标签可能也变了）
+            if self._map_copy is not None:
+                self._map_copy_val = self._get_col_header(self._map_copy, self._map_copy_val)
+            if self._map_match is not None:
+                self._map_match_val = self._get_col_header(self._map_match, self._map_match_val)
+            self._sync_ui()
+            self._stop_blink()  # 停止闪烁
+            self._help_var.set("③ 表头行已设为第 {} 行 → ④ 点击数据格标记复制列(蓝) / 匹配键(橙)".format(row_idx + 1))
+            self._act("表头行已设为第 {} 行".format(row_idx + 1))
+            return
         col_idx = int(col_str.replace('#', '')) - 1
         if col_idx < 0:
             return
@@ -1249,6 +1403,12 @@ class ExcelBridgeApp(ctk.CTk):
         # 获取单元格值
         vals = tree.item(row, 'values')
         cell_val = str(vals[col_idx]).strip() if col_idx < len(vals) else ''
+
+        # 源文件：必须先标记表头行再标记列
+        if is_source and self._src_header_row < 0:
+            self._help_var.set("⚠ 请先点击最左侧 ○ 标记表头行，再点击数据格标记列")
+            self._start_blink()  # 闪烁提醒
+            return
 
         # 清除旧高亮
         for iid in tree.get_children():
@@ -1260,54 +1420,54 @@ class ExcelBridgeApp(ctk.CTk):
         if is_source:
             if self._map_copy is None:
                 self._map_copy = col_idx
-                self._map_copy_val = cell_val
+                self._map_copy_val = self._get_col_header(col_idx, cell_val)
                 tree.item(row, tags=('hl1.X',))
-                self._src_status.configure(text=f"🔵 复制列: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._src_status.configure(text=f"🔵 复制列: {chr(65+col_idx)} \"{self._map_copy_val[:15]}\"")
                 self._src_badge.configure(fg_color=C.COPY_BG)
-                self._help_var.set(" 已标记复制列！现在请点击「匹配依据列」（橙色标记）。")
+                self._help_var.set("🔵 复制列已标记 → 请点击「匹配依据列」（橙色标记）")
             elif self._map_match is None and col_idx != self._map_copy:
                 self._map_match = col_idx
-                self._map_match_val = cell_val
+                self._map_match_val = self._get_col_header(col_idx, cell_val)
                 tree.item(row, tags=('hl2.X',))
-                self._src_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._src_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{self._map_match_val[:15]}\"")
                 self._src_badge.configure(fg_color=C.MATCH_BG)
-                self._help_var.set(" 源文件标记完成！现在在下方目标模板中点击「匹配键列」（绿色）和「粘贴列」（紫色）。")
+                self._help_var.set("🟠 匹配键已标记 → ⑤ 在下方目标模板标记匹配键(绿) / 粘贴列(紫)")
                 self._step = 2
             else:
                 self._map_copy = col_idx
-                self._map_copy_val = cell_val
+                self._map_copy_val = self._get_col_header(col_idx, cell_val)
                 self._map_match = None
                 self._map_match_val = ''
                 tree.item(row, tags=('hl1.X',))
-                self._src_status.configure(text=f"🔵 复制列: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._src_status.configure(text=f"🔵 复制列: {chr(65+col_idx)} \"{self._map_copy_val[:15]}\"")
                 self._src_badge.configure(fg_color=C.COPY_BG)
-                self._help_var.set(" 请点击「匹配依据列」（橙色标记）。")
+                self._help_var.set("🔵 复制列已标记 → 请点击「匹配依据列」（橙色标记）")
                 self._step = 1
         else:
             if self._map_tkey is None:
                 self._map_tkey = col_idx
-                self._map_tkey_val = cell_val
+                self._map_tkey_val = self._get_col_header(col_idx, cell_val, is_source=False)
                 tree.item(row, tags=('hl1.X',))
-                self._tgt_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._tgt_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{self._map_tkey_val[:15]}\"")
                 self._tgt_badge.configure(fg_color=C.TARGET_BG)
-                self._help_var.set(" 目标匹配键已标记！现在请点击「要粘贴到的列」（紫色标记）。")
+                self._help_var.set("🟢 目标键已标记 → 请点击「粘贴至」（紫色标记）")
             elif self._map_paste is None and col_idx != self._map_tkey:
                 self._map_paste = col_idx
-                self._map_paste_val = cell_val
+                self._map_paste_val = self._get_col_header(col_idx, cell_val, is_source=False)
                 tree.item(row, tags=('hl2.X',))
-                self._tgt_status.configure(text=f"🟣 粘贴至: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._tgt_status.configure(text=f"🟣 粘贴至: {chr(65+col_idx)} \"{self._map_paste_val[:15]}\"")
                 self._tgt_badge.configure(fg_color=C.PASTE_BG)
-                self._help_var.set(" 映射完成！请点击右侧「预览匹配结果」查看数据。")
+                self._help_var.set("✅ 映射完成 → ⑥ 点击「预览匹配结果」执行匹配")
                 self._step = 3
             else:
                 self._map_tkey = col_idx
-                self._map_tkey_val = cell_val
+                self._map_tkey_val = self._get_col_header(col_idx, cell_val, is_source=False)
                 self._map_paste = None
                 self._map_paste_val = ''
                 tree.item(row, tags=('hl1.X',))
-                self._tgt_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{cell_val[:15]}\"")
+                self._tgt_status.configure(text=f"🟠 匹配键: {chr(65+col_idx)} \"{self._map_tkey_val[:15]}\"")
                 self._tgt_badge.configure(fg_color=C.TARGET_BG)
-                self._help_var.set(" 请点击「要粘贴到的列」（紫色标记）。")
+                self._help_var.set("🟢 目标键已标记 → 请点击「粘贴至」（紫色标记）")
                 self._step = 2
 
         self._sync_ui()
@@ -1389,6 +1549,10 @@ class ExcelBridgeApp(ctk.CTk):
             source_key_col=self._map_match,
             target_key_col=self._map_tkey,
             target_dest_col=self._map_paste,
+            source_value_label=self._map_copy_val,
+            source_key_label=self._map_match_val,
+            target_key_label=self._map_tkey_val,
+            target_dest_label=self._map_paste_val,
         )
         source_dir = getattr(self, '_source_dir', '') or self._src_entry.get().strip()
         target_path = getattr(self, '_tgt_path', '') or self._tgt_entry.get().strip()
@@ -1407,7 +1571,8 @@ class ExcelBridgeApp(ctk.CTk):
             try:
                 skip = self._skip_hidden.get() if hasattr(self, '_skip_hidden') else False
                 result = preview_matches(source_dir, target_path, mapping_obj,
-                                         skip_hidden=skip)
+                                         skip_hidden=skip,
+                                         target_header_row=self._tgt_header_row)
                 entries = [(e.key, e.value, e.source_file) for e in result.entries if e.has_data]
             except Exception as e:
                 preview_error = f"预览失败: {e}"
@@ -1500,6 +1665,10 @@ class ExcelBridgeApp(ctk.CTk):
             source_key_col=self._map_match,
             target_key_col=self._map_tkey,
             target_dest_col=self._map_paste,
+            source_value_label=self._map_copy_val,
+            source_key_label=self._map_match_val,
+            target_key_label=self._map_tkey_val,
+            target_dest_label=self._map_paste_val,
         )
         entries = []
         for key, val, fname, cb_var in self._preview_entries:
@@ -1589,12 +1758,17 @@ class ExcelBridgeApp(ctk.CTk):
         # 标题（固定不滚动）
         hdr = self._cf(win)
         hdr.pack(fill='x', padx=24, pady=(24, 8))
-        ctk.CTkLabel(hdr, text="ExcelBridge V1.0",
+        ctk.CTkLabel(hdr, text="ExcelBridge V{}".format(__version__),
                      font=('Inter', self._fs(22), 'bold'),
                      text_color=C.TEXT_TITLE).pack()
         ctk.CTkLabel(hdr, text="Excel 数据批量匹配迁移工具",
                      font=('Inter', self._fs(12)),
                      text_color=C.TEXT_HELP).pack(pady=(4, 0))
+        build = _build_info()
+        if build:
+            ctk.CTkLabel(hdr, text=build,
+                         font=('Inter', self._fs(9)),
+                         text_color=C.TEXT_MUTED).pack(pady=(2, 0))
         ctk.CTkFrame(win, fg_color=C.BORDER, height=1).pack(fill='x', padx=24)
 
         # 可滚动内容区

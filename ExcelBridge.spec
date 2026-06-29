@@ -8,7 +8,7 @@ from pathlib import Path
 block_cipher = None
 
 # Collect customtkinter data and icon files
-added_files = [('_icons', '_icons')]
+added_files = [('_icons', '_icons'), ('icon.ico', '.')]
 
 a = Analysis(
     ['main.py'],
@@ -25,6 +25,7 @@ a = Analysis(
         'excel_reader',
         'excel_writer',
         'rule_engine',
+        '_version',
     ],
     hookspath=[],
     hooksconfig={},
